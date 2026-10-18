@@ -1,7 +1,6 @@
-# Duck Egg Inspector
+# This is a Project Design of Students in TECHNOLOGICAL INSTITUTE OF THE PHILIPPINES COMPUTER ENGINEERING DEPARTMENT TEAM24
 
-> **Project Design by Team 24**
-> Computer Engineering Department, Technological Institute of the Philippines
+# Duck Egg Inspector
 
 Touchscreen app for the duck egg micro-fissure inspection + UV-C station (Raspberry Pi 5).
 It inspects a 10-egg tray, flags cracked eggs (screen, LED, buzzer), shows the optical, infrared and
