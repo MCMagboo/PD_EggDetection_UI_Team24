@@ -1,0 +1,3 @@
+# pip side of the dependencies. numpy, Pillow, picamera2 and gpiozero come from apt
+# (the venv is created with --system-site-packages so it can see them).
+customtkinter>=5.2

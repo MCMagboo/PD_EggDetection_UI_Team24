@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+egg-venv/
+
+# Model weights and captures (large; share via Drive/Releases instead)
+*.pth
+*.pt
+*.onnx
+egg_camera_test.jpg
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
