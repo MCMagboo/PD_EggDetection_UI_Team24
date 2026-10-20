@@ -7,8 +7,9 @@ tray_motor). A separate spin motor beside the camera stand meshes with the gear 
 whichever holder is at the camera station and turns that egg about its vertical axis.
 
 Per egg: tray motor brings the holder to the fixed camera (gears must line up) -> spin
-motor turns the egg 360 deg in `frames_per_egg` steps (stop, settle, capture) -> model
-scores every view -> the egg is defective if ANY view scores >= detect_threshold.
+motor turns the egg 360 deg in `frames_per_egg` steps (stop, settle, capture) -> each view
+goes to the Mask R-CNN model API as soon as it is captured, so upload and inference overlap
+the spin -> the egg is defective if ANY view is cracked (score >= threshold).
 The two motors never run together: spinning while the tray moves would grind the gears.
 
 Tray direction: forward only during a batch (holder 1 -> 10); afterwards it reverses to
@@ -18,14 +19,16 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 
 from PIL import Image
 
 from .backend_base import Progress
 from .config import ACTIVE_HIGH, PINS, Config
 from .datatypes import EggResult
+from .model_client import CrackModel, ViewScore
 
-View = tuple[Image.Image, Image.Image]      # (optical, thermal) captured at one spin angle
+View = tuple[Image.Image, "Future[ViewScore]"]      # captured frame + its pending model verdict
 
 
 def open_camera():
@@ -58,7 +61,11 @@ class PiBackend:
         self.door = Button(PINS["door_switch"], pull_up=True)     # pressed = door closed (check your switch)
         self.defect_leds = [LED(p) for p in PINS["defect_leds"]]
         self.model = None
+        self.pool = ThreadPoolExecutor(max(1, self.parallel_views()), thread_name_prefix="model")
         self._init_camera()
+
+    def parallel_views(self) -> int:
+        return self.cfg.model_parallel
 
     def _init_camera(self) -> None:
         self.cam = open_camera()
@@ -73,6 +80,12 @@ class PiBackend:
         self.safe_off()
         self.backlight.off()
         self.cam.stop()
+        self._close_model()
+
+    def _close_model(self) -> None:
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        if self.model is not None:
+            self.model.close()
 
     # ---- sensors ---------------------------------------------------------
     def eggs_loaded(self) -> bool:
@@ -138,31 +151,48 @@ class PiBackend:
         views = self._spin_and_capture(egg, stop, progress)
         if views is None:
             return None
-        scores = []
-        for k, (optical, _) in enumerate(views):
-            if stop.is_set():
-                return None
+        scores: list[ViewScore] = []
+        for k, (_, pending) in enumerate(views):
             progress(f"{egg}: analysing view {k + 1}/{len(views)}")
-            scores.append(self._predict(optical))
-        best = max(range(len(views)), key=scores.__getitem__)
-        score = scores[best]
-        defective = score >= self.cfg.detect_threshold
-        optical, thermal = views[best]
-        heatmap = self._explain(optical) if defective else None
-        return EggResult(index, defective, score if defective else 1 - score, optical, thermal, heatmap,
-                         (time.perf_counter() - t0) * 1000, views=len(views),
+            score = self._await(pending, stop)
+            if score is None:
+                self._cancel(views)
+                return None
+            scores.append(score)
+        best = max(range(len(views)), key=lambda k: scores[k].score)
+        view = scores[best]
+        return EggResult(index, view.cracked, view.score if view.cracked else 1 - view.score, views[best][0],
+                         view.heatmap, (time.perf_counter() - t0) * 1000, views=len(views),
                          angle_deg=best * 360 / len(views))
 
     def _spin_and_capture(self, egg: str, stop: threading.Event, progress: Progress) -> list[View] | None:
-        """One full turn in equal steps; capture while the egg is still (no motion blur)."""
+        """One full turn in equal steps; capture while the egg is still (no motion blur).
+        Each view is handed to the model straight away, so inference runs during the next spin step."""
         n = self.cfg.frames_per_egg
         views: list[View] = []
         for k in range(n):
             if k and not self._spin_step(stop):
+                self._cancel(views)
                 return None
             progress(f"{egg}: capturing view {k + 1}/{n}")
-            views.append((self._optical_frame(), self._thermal_frame()))
+            optical = self._optical_frame()
+            views.append((optical, self.pool.submit(self._predict, optical)))
         return views
+
+    @staticmethod
+    def _await(pending: Future[ViewScore], stop: threading.Event) -> ViewScore | None:
+        """Wait for one verdict while watching Stop. Model API errors are raised here."""
+        while True:
+            try:
+                return pending.result(timeout=0.05)
+            except TimeoutError:
+                if stop.is_set():
+                    return None
+
+    @staticmethod
+    def _cancel(views: list[View]) -> None:
+        for _, pending in views:
+            pending.cancel()              # requests already on the wire finish in the background
 
     def _spin_step(self, stop: threading.Event) -> bool:
         """Turn the egg 1/frames_per_egg of a revolution, then let it settle.
@@ -180,18 +210,13 @@ class PiBackend:
     def _optical_frame(self) -> Image.Image:
         return Image.fromarray(self.cam.capture_array()[..., ::-1])   # Picamera2 "RGB888" is BGR order
 
-    # ---- the pieces you still have to write ------------------------------
-    def _load_model(self):
-        raise NotImplementedError("Load the trained SOLOv2 weights (PyTorch) here")
+    # ---- model (Mask R-CNN + XGrad-CAM on the Modal API) ------------------
+    def _load_model(self) -> CrackModel:
+        return CrackModel.from_env(self.cfg.model_api_url, self.cfg.detect_threshold)
 
-    def _thermal_frame(self) -> Image.Image:
-        raise NotImplementedError("Grab a frame from the infrared/thermal camera")
-
-    def _predict(self, optical: Image.Image) -> float:
-        raise NotImplementedError("Run SOLOv2 on one view; return its max crack score (0..1)")
-
-    def _explain(self, optical: Image.Image) -> Image.Image:
-        raise NotImplementedError("XGrad-CAM on ResNet-50 Layer 3 (1024x64x64), upsample, overlay on `optical`")
+    def _predict(self, optical: Image.Image) -> ViewScore:
+        """Crack verdict for one view; runs on the model thread pool."""
+        return self.model.predict(optical)
 
     # ---- outputs ---------------------------------------------------------
     def set_defect_led(self, index: int, on: bool) -> None:
@@ -212,6 +237,9 @@ class PiBackend:
         self.tray_motor.stop()
         self.spin_motor.off()
         self.buzzer.off()
+
+
+SIMULATED_THRESHOLD = 0.5
 
 
 class _SimulatedModel:
@@ -240,31 +268,28 @@ class _SimulatedModel:
             self._cracks[key] = _crack_path(self._rng) if self._rng.random() < 0.04 else None
         return self._cracks[key]
 
+    def parallel_views(self) -> int:
+        return 1                                    # instant verdicts; one thread keeps the shared state simple
+
     def _load_model(self):
         return None
 
-    def _predict(self, optical: Image.Image) -> float:
-        cracked = self._crack_for(optical) is not None
-        return float(self._rng.uniform(0.3, 0.9) if cracked else self._rng.uniform(0.0, 0.1))
-
-    def _explain(self, optical: Image.Image) -> Image.Image:
+    def _predict(self, optical: Image.Image) -> ViewScore:
         from .mock_backend import H, W, _overlay
 
-        return _overlay(optical.convert("RGB").resize((W, H)), self._crack_for(optical))
+        crack = self._crack_for(optical)
+        score = float(self._rng.uniform(0.55, 0.95) if crack else self._rng.uniform(0.0, 0.1))
+        cracked = score >= (self.cfg.detect_threshold or SIMULATED_THRESHOLD)
+        heatmap = _overlay(optical.convert("RGB").resize((W, H)), crack) if cracked else None
+        return ViewScore(score, cracked, heatmap)
 
 
 class NoModelPiBackend(_SimulatedModel, PiBackend):
     """Everything real (camera, motors, sensors, LEDs, buzzer, UV-C) except the model, whose
-    verdicts are simulated. The infrared panel shows a placeholder until _thermal_frame is written."""
+    verdicts are simulated (no network or API credentials needed)."""
 
     def prepare(self) -> None:
         self.cam.start()
-
-    def _thermal_frame(self) -> Image.Image | None:
-        try:
-            return super()._thermal_frame()
-        except NotImplementedError:
-            return None                         # UI shows "Infrared camera not connected"
 
 
 class FakeVisionPiBackend(_SimulatedModel, PiBackend):
@@ -280,6 +305,7 @@ class FakeVisionPiBackend(_SimulatedModel, PiBackend):
     def close(self) -> None:
         self.safe_off()
         self.backlight.off()
+        self._close_model()
 
     def _optical_frame(self) -> Image.Image:
         from .mock_backend import _crack_path, _optical
@@ -288,8 +314,3 @@ class FakeVisionPiBackend(_SimulatedModel, PiBackend):
         img = _optical(self._rng, crack)
         self._cracks[id(img)] = crack           # draw the crack the score will "find"
         return img
-
-    def _thermal_frame(self) -> Image.Image:
-        from .mock_backend import _thermal
-
-        return _thermal(None)

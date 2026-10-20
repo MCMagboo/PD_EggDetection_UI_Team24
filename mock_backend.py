@@ -58,11 +58,6 @@ def _optical(rng: np.random.Generator, crack) -> Image.Image:
     return img.filter(ImageFilter.GaussianBlur(0.8))
 
 
-def _thermal(crack) -> Image.Image:
-    base = 0.35 * _EGG + 0.2 * np.clip(1.0 - _R2, 0, 1)
-    return Image.fromarray(_jet(np.clip(base + 0.4 * _crack_field(crack, 2), 0, 1)))
-
-
 def _overlay(optical: Image.Image, crack) -> Image.Image:
     field = _crack_field(crack, 10)
     heat = _jet(field).astype(np.float32)
@@ -117,7 +112,6 @@ class MockBackend:
             defective=defective,
             confidence=float(conf),
             optical=optical,
-            thermal=_thermal(crack),
             heatmap=_overlay(optical, crack) if defective else None,
             latency_ms=(time.perf_counter() - t0) * 1000,
             views=n,

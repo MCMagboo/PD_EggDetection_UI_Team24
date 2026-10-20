@@ -19,6 +19,14 @@ if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -gt 1048576 ]; then
     mv -f "$LOG" "$LOG.1"
 fi
 
+# Model API credentials (MASKRCNN_API_KEY / MASKRCNN_API_SECRET), kept out of the repo.
+MODEL_ENV="$HOME/.config/egg_inspector/model.env"
+if [ -f "$MODEL_ENV" ]; then
+    set -a
+    . "$MODEL_ENV"
+    set +a
+fi
+
 echo "=== $(date '+%F %T') start: $*" >>"$LOG"
 cd "$(dirname "$PKG_DIR")"
 "$VENV/bin/python" -m "$(basename "$PKG_DIR")" "$@" >>"$LOG" 2>&1

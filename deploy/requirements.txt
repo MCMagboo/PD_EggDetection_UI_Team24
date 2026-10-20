@@ -1,3 +1,6 @@
 # pip side of the dependencies. numpy, Pillow, picamera2 and gpiozero come from apt
 # (the venv is created with --system-site-packages so it can see them).
 customtkinter>=5.2
+# Model API client (Mask R-CNN on Modal); small, no PyTorch needed on the Pi.
+httpx>=0.28.1
+pydantic>=2.14

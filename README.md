@@ -3,7 +3,7 @@
 # Duck Egg Inspector
 
 Touchscreen app for the duck egg micro-fissure inspection + UV-C station (Raspberry Pi 5).
-It inspects a 10-egg tray, flags cracked eggs (screen, LED, buzzer), shows the optical, infrared and
+It inspects a 10-egg tray, flags cracked eggs (screen, LED, buzzer), shows the optical and
 XGrad-CAM heatmap images, and runs UV-C disinfection.
 
 The UI is built with [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter) and laid out for an
@@ -22,8 +22,9 @@ GPIO or model.
 
 | Option | Meaning |
 |---|---|
-| `--backend mock\|pi` | `mock` = fake data (default); `pi` = real camera, GPIO, UV-C relay and model |
-| `--no-model` | With `--backend pi`: real camera, motors, LEDs, buzzer and UV-C; crack verdicts simulated until the model is ready |
+| `--backend mock\|pi\|images` | `mock` = fake data (default); `pi` = real camera, GPIO, UV-C relay and the model API; `images` = your photos through the real model, no hardware |
+| `--images DIR` | With `--backend images`: folder of egg photos, one per tray slot |
+| `--no-model` | With `--backend pi`: real camera, motors, LEDs, buzzer and UV-C; crack verdicts simulated (no network needed) |
 | `--fake-vision` | With `--backend pi`: like `--no-model` but with drawn eggs instead of the camera |
 | `--windowed` | Run in a window instead of fullscreen |
 | `--size 1024x600` | Window size when `--windowed` |
@@ -46,7 +47,7 @@ In `config.py`:
 **Get `ACTIVE_HIGH` right before connecting the UV-C lamp.** With the wrong setting, "off" means on, and the
 lamp would switch on as soon as the script starts.
 
-### 2. Copy the folder to the Pi and install the two dependencies
+### 2. Copy the folder to the Pi and install the dependencies
 
 Copy the `egg_inspector` folder to the Pi, e.g. `~/egg_inspector`. Raspberry Pi OS already has `gpiozero`,
 `numpy` and Pillow. For the touchscreen app (step 4) you also need CustomTkinter, installed in a venv that can
@@ -55,7 +56,7 @@ see the system packages:
 ```bash
 cd ~
 python3 -m venv --system-site-packages ~/egg-venv
-~/egg-venv/bin/pip install customtkinter
+~/egg-venv/bin/pip install -r ~/egg_inspector/deploy/requirements.txt
 ```
 
 In VS Code, select `~/egg-venv/bin/python` as the interpreter.
@@ -107,8 +108,7 @@ The app opens the camera with Picamera2, which supports the IMX219 directly; no 
   - **Official module:** check the cable and which way round it's plugged in. It's detected automatically.
   - **Third-party IMX219 board (e.g. Arducam):** add `camera_auto_detect=0` and `dtoverlay=imx219` to
     `/boot/firmware/config.txt`, then reboot.
-- **NoIR version:** photos look pinkish in room light. That's normal and fine under your own backlight. It isn't
-  a replacement for the infrared camera, which is a separate sensor.
+- **NoIR version:** photos look pinkish in room light. That's normal and fine under your own backlight.
 - **Exposure and white balance are automatic for now:** a backlit egg can come out brighter or darker depending
   on its shell, and the model sees those differences too. Before the model goes in, lock the exposure, gain and
   white balance, and use the same settings for training photos as for photos the app scores. See *Known open items*.
@@ -132,13 +132,13 @@ and UV-C**:
 5. UV-C runs automatically if a crack was found (door must be closed).
 
 Only the **crack verdicts are simulated** until the model is integrated: about one egg in four gets flagged so the
-reject and UV-C paths run. The header shows **"Simulated results: no model loaded"** in amber the whole time. The
-infrared panel shows "Infrared camera not connected" until `_thermal_frame` is written.
+reject and UV-C paths run. The header shows **"Simulated results: no model loaded"** in amber the whole time.
 
 - Add `--windowed` to run in a window instead of fullscreen (e.g. over VS Code Remote / VNC).
 - Use `--fake-vision` instead of `--no-model` to also replace the camera with drawn eggs, e.g. while the camera
   is unplugged.
-- Without either flag, the app needs the trained model. It stops with a message saying what isn't written yet.
+- Without either flag, the app sends every view to the model API (see *The crack-detection model*). It stops
+  with a message if the API credentials are missing.
 - **No camera found:** the app stops with a message. Power off, check the ribbon cable, then run
   `rpicam-hello --list-cameras`.
 - **Tray faults:** the app shows a fault if the home or slot sensor never triggers. Check them with the
@@ -162,7 +162,7 @@ Re-run the installer to change options:
 | Option | Meaning |
 |---|---|
 | *(none)* | Mock backend; works before the model and hardware are ready |
-| `--backend pi` | Real hardware + model (needs the TODOs in `pi_backend.py` filled in first) |
+| `--backend pi` | Real hardware + model API (set up `model.env` first, see *The crack-detection model*) |
 | `--autostart` | Open the app automatically at login (kiosk mode) |
 | `--no-apt` | Skip `apt-get` (offline or already installed) |
 | `--uninstall` | Remove icons, autostart entry and venv; keeps the source folder |
@@ -183,8 +183,22 @@ The installer installs the system packages, creates a venv at `~/.local/share/eg
 | **Stop** | Stops inspection or UV-C immediately |
 | **Reset** | Clears the screen and the defect LEDs |
 | **Tray eggs** | Tap an inspected egg to review its images and result. The egg being inspected is outlined in blue |
+| **Optical / XGrad-CAM image** | Tap to see it full size (the images are small on a 7" screen). Tap again to close. Start/Stop/Reset stay visible |
 | **Run UV-C** | Manual UV-C at any time. Tap once to arm (turns amber), tap again within 3 s to start |
 | **Auto** switch | In the UV-C card: start UV-C automatically when a cracked egg is found |
+
+### Screen
+
+The station uses the **Waveshare 7inch HDMI LCD (B)**: 800x480, HDMI video plus USB touch. The app is laid out
+for exactly this size. It should look sharp only if the Pi outputs **800x480** itself. If the Pi sends a bigger
+mode, the LCD scales the picture down and everything goes soft.
+
+- Check the resolution: `wlr-randr` (Wayland desktop) or `xrandr` (X11) should show `800x480` as current.
+- If it doesn't, add `video=HDMI-A-1:800x480M@60` to the end of the single line in `/boot/firmware/cmdline.txt`,
+  then reboot. Use `HDMI-A-2` if the screen is on the second micro-HDMI port.
+- Keep desktop scaling at 100%. Raspberry Pi OS options like "large screen" or pixel doubling would enlarge the
+  app as a bitmap and blur it.
+- To preview the exact screen on a PC: `python -m egg_inspector --windowed` (800x480 is the default size).
 
 ### UV-C behaviour
 
@@ -211,7 +225,10 @@ Safety rules in software:
 | `controller.py` | Background worker: inspection cycle, UV-C policy and safety checks |
 | `backend_base.py` | `Backend` interface that both backends implement |
 | `mock_backend.py` | Fake images for development without hardware |
-| `pi_backend.py` | Real camera, GPIO, UV-C relay and model (**model parts still TODO**). Also `NoModelPiBackend` (real camera + hardware, simulated verdicts) and `FakeVisionPiBackend` (no camera) |
+| `image_backend.py` | `--backend images`: photos from a folder through the real model API, no hardware |
+| `pi_backend.py` | Real camera, GPIO, UV-C relay; sends views to the model. Also `NoModelPiBackend` (real camera + hardware, simulated verdicts) and `FakeVisionPiBackend` (no camera) |
+| `model_client.py` | Client for the Mask R-CNN + XGrad-CAM model API; also a one-photo command-line check |
+| `api_contract.py` | The API's response format, copied unchanged from the model team's client |
 | `datatypes.py` | `EggResult`, `Summary`, `UvcOutcome`, `Event` |
 | `deploy/` | Pi installer, launcher script, icon, pip requirements |
 
@@ -230,8 +247,9 @@ meshes with the gear of whichever holder is at the camera station.
    camera, aligned so its gear meshes with the spin motor.
 2. **Egg spins:** the spin motor turns the egg about its vertical axis, 360° in `frames_per_egg` equal steps
    (default 8, i.e. every 45°). It stops and settles before each capture, so hairline cracks are not motion-blurred.
-3. **Capture:** one optical and one infrared frame per step.
-4. **Score:** the model scores every view. The egg is **rejected if any view** scores at or above `detect_threshold`.
+3. **Capture:** one optical frame per step. It goes to the model API straight away, so inference runs while the
+   egg spins to the next angle (up to `model_parallel` views in flight).
+4. **Score:** the model scores every view. The egg is **rejected if any view** scores at or above the threshold.
 5. **Display:** the screen shows the highest-scoring view, its heatmap, and the angle where the crack faced the
    camera (e.g. "Micro-fissure at 135° · 8 views").
 6. **Return:** after egg 10, the tray **reverses** back to holder 1, then UV-C runs if needed.
@@ -273,32 +291,99 @@ slow the motor or add a mechanical detent. A stepper on the centre shaft would a
 that takes 1 s per image on the Pi, expect roughly 12–13 s per egg, or about 2 minutes per tray. Measure it on
 the Pi and lower `frames_per_egg` if that's too slow.
 
-## Integrating the trained model
+## The crack-detection model
 
-Fill in these methods in `pi_backend.py`. Tray homing and indexing, and the spin and capture sequence, are
-already written:
+The model is **Mask R-CNN + XGrad-CAM**, trained and deployed by the model team on a Modal GPU server. The Pi
+doesn't run it and doesn't need PyTorch. `model_client.py` sends each view as a JPEG to `POST <url>/predict`
+and gets back:
 
-| Method | Must do |
+- the crack decision and the max crack score,
+- an XGrad-CAM overlay (`backbone.body.layer4[-1]`) when a crack is found. This is shown in the XGrad-CAM panel.
+
+Every reply is checked against `api_contract.py`.
+
+### Setting it up on the Pi
+
+The API needs a Modal proxy token pair (a key starting `wk-` and a secret starting `ws-`); ask the model team
+for it. Run these on the Pi:
+
+1. Install the client packages (`httpx`, `pydantic`) into the app's venv:
+   ```bash
+   ~/egg-venv/bin/pip install -r ~/egg_inspector/deploy/requirements.txt
+   ```
+2. Create the credentials file and make it readable only by you:
+   ```bash
+   mkdir -p ~/.config/egg_inspector
+   nano ~/.config/egg_inspector/model.env
+   chmod 600 ~/.config/egg_inspector/model.env
+   ```
+   Put the token pair in it:
+   ```bash
+   MASKRCNN_API_KEY=wk-...
+   MASKRCNN_API_SECRET=ws-...
+   # MASKRCNN_API_URL=https://...   (only if the endpoint changes; default is model_api_url in config.py)
+   ```
+3. Load the file into the terminal and score one photo to check the connection. Run this from the folder that
+   contains `egg_inspector/`:
+   ```bash
+   cd ~
+   set -a; . ~/.config/egg_inspector/model.env; set +a
+   ~/egg-venv/bin/python -m egg_inspector.model_client ~/egg_camera_test.jpg --heatmap heat.png
+   ```
+   It prints `CRACK` or `no crack` with the score, and saves the heatmap if a crack was found.
+4. Run the app with the real model:
+   ```bash
+   ~/egg-venv/bin/python -m egg_inspector --backend pi
+   ```
+   The desktop icon (`deploy/run.sh`) loads `model.env` automatically, so step 3's `set -a` line is only
+   needed in a terminal.
+
+**Keep the token pair private.** Never commit it (`.gitignore` already blocks `*.env` files), and don't put
+it in a shared or public folder or chat. Anyone who has it can use the model server. If it leaks, ask the
+model team to create a new pair and delete the old one, then update `model.env`.
+
+### Checking the connection from a PC
+
+In PowerShell, from the folder that contains `egg_inspector\`:
+
+```powershell
+pip install -r egg_inspector\deploy\requirements.txt
+$env:MASKRCNN_API_KEY = 'wk-...'
+$env:MASKRCNN_API_SECRET = 'ws-...'
+python -m egg_inspector.model_client C:\path\to\egg.jpg --heatmap heat.png
+```
+
+### Testing the real model in the app on a PC
+
+`--backend images` runs the whole app on a laptop with **real model results**. Nothing is simulated. Put up to
+10 egg photos (.jpg/.png, or iPhone .HEIC after `pip install pillow-heif`) in a folder; each tray slot gets one photo, in file-name order. Each photo goes to the
+model API, and the screen shows its real verdict, confidence and XGrad-CAM heatmap. There are no motors, so LEDs,
+buzzer and UV-C are only logged in the terminal.
+
+```powershell
+cd C:\Users\<you>\OneDrive\Desktop
+$env:MASKRCNN_API_KEY = 'wk-...'
+$env:MASKRCNN_API_SECRET = 'ws-...'
+python -m egg_inspector --backend images --images C:\path\to\photos --windowed
+```
+
+The header shows "Test mode: N photos from <folder>, real model". The result card shows which photo each egg is.
+Photos larger than 2048 px are scaled down before upload, because the API rejects bigger images (HTTP 413).
+
+### Settings and timing (`config.py`)
+
+| Setting | Meaning |
 |---|---|
-| `_load_model()` | Load the trained SOLOv2 weights |
-| `_thermal_frame()` | Return a frame from the infrared camera as a PIL image |
-| `_predict(optical)` | Run the model on **one view**; return its max crack score (0–1). The threshold is applied for you |
-| `_explain(optical)` | XGrad-CAM on ResNet-50 layer 3, upsampled and overlaid on `optical` (PIL image) |
+| `detect_threshold` | `None` uses the model's validated threshold (0.83). A number from 0.01 to 0.99 overrides it. Because an egg is rejected if *any* view crosses it, check false rejects per egg, not per image. |
+| `model_api_url` | Base URL of the deployed API (without `/predict`) |
+| `model_parallel` | Views sent at once; 4 lets uploads overlap the spin |
 
-Checklist when the model is ready:
-
-- **Threshold:** set `detect_threshold` in `config.py` to the value calibrated on your validation set. Because an
-  egg is rejected if *any* of its views crosses it, check the false-reject rate per egg, not per image.
-- **Preprocessing:** must match training. The IMX219 captures 1640x1232 RGB (configured in
-  `PiBackend._init_camera`); check resolution, crop, colour order and normalisation against your training pipeline.
-- **Camera settings:** train on photos taken by the station's own IMX219, with the same focus, backlight, exposure
-  and white balance as during inspection.
-- **Dependencies:** add PyTorch and your detection framework to `deploy/requirements.txt`. Test installing them
-  on the Pi early; mmcv in particular can be hard to build on ARM.
-- **Confidence display:** for a cracked egg the screen shows the raw crack score. With a low threshold, a correct
-  reject can display a low percentage, so consider showing a calibrated value.
-- **Speed:** inference runs on the worker thread, so slow models won't freeze the UI. Measure per-egg time on the
-  Pi 5; it is shown as "Inspection time" after each batch.
+- **Speed:** about 3 s per view when the server is warm. The first request after an idle period waits for the GPU
+  to start (about 15 s), so the first egg of the day is slower.
+- **Network:** the Pi needs internet access during inspection. If the API can't be reached, the batch stops with
+  an error on screen. Use `--no-model` to run the rig offline.
+- **Camera settings:** the model should see photos like the ones it was trained on: same focus, backlight,
+  exposure and white balance. Share some photos from the station's IMX219 with the model team.
 
 ### Known open items
 
@@ -306,8 +391,6 @@ Checklist when the model is ready:
   fixed values so every egg is photographed the same way. This isn't built yet; the plan is new settings in
   `config.py` applied in `PiBackend._init_camera`.
 
-- `PiBackend` imports the camera and GPIO libraries on start-up. The model therefore can't be tested on a PC
-  without hardware yet. Splitting the model into its own module is planned.
 - `spin_seconds` is a placeholder until it's measured on the real spin motor and gears.
 - The tray code assumes a reversible motor plus home and slot sensors (see *Tray direction and wiring*). If the
   rig uses a stepper instead, `home_tray` and `_index_tray` in `pi_backend.py` need adapting.

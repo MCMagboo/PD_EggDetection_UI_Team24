@@ -1,6 +1,6 @@
 """Touchscreen UI (CustomTkinter), laid out after Figure 2-11 of the design paper.
 
-Screen: optical | infrared | XGrad-CAM heatmap, result + confidence, UV-C panel
+Screen: optical | XGrad-CAM heatmap (Mask R-CNN), result + confidence, UV-C panel
 (countdown ring, auto-on-cracks switch, manual Run UV-C with tap-again confirm),
 10-egg tray strip (tap an egg to review it), and big Start / Stop / Reset buttons.
 Widgets are only touched from the main thread; the worker thread talks through a queue.
@@ -144,9 +144,12 @@ def _badge(px: int, state: str) -> Image.Image:
 
 # --------------------------------------------------------------- components
 class ImagePanel(ctk.CTkFrame):
-    def __init__(self, master, title, hint, accent, size, fonts, radius, corner):
+    """One image card. Tapping it calls on_tap(image, title) so the app can show the image full size."""
+
+    def __init__(self, master, title, hint, accent, size, fonts, radius, corner, on_tap=None):
         super().__init__(master, fg_color=C["card"], border_color=C["line"], border_width=1, corner_radius=corner)
-        self.size = size
+        self.size, self.title, self.on_tap = size, title, on_tap
+        self.source: Image.Image | None = None             # full-resolution image behind the thumbnail
         mask = Image.new("L", (size[0] * SS, size[1] * SS), 0)
         ImageDraw.Draw(mask).rounded_rectangle((0, 0, size[0] * SS - 1, size[1] * SS - 1), radius * SS, fill=255)
         self._mask = _downsample(mask, size)
@@ -158,24 +161,55 @@ class ImagePanel(ctk.CTkFrame):
         ctk.CTkLabel(head, text=title, text_color=C["text"], font=fonts["title"], height=0).pack(side="left", padx=(6, 0))
         if hint:
             ctk.CTkLabel(head, text=hint, text_color=C["faint"], font=fonts["hint"], height=0).pack(side="left", padx=(6, 0))
+        self.zoom_hint = ctk.CTkLabel(head, text="", text_color=C["faint"], font=fonts["hint"], height=0)
+        self.zoom_hint.pack(side="right")
         self.view = ctk.CTkLabel(self, text="", image=self._blank, width=size[0], height=size[1],
                                  fg_color=C["card"], text_color=C["faint"], font=fonts["hint"], corner_radius=0)
         self.view.pack(padx=8, pady=(0, 8))
+        for w in (self, head, self.view, self.zoom_hint):                # the whole card is the touch target
+            w.bind("<Button-1>", self._tapped)
+
+    def _tapped(self, _event=None) -> None:
+        if self.source is not None and self.on_tap:
+            self.on_tap(self.source, self.title)
 
     def _rounded(self, img: Image.Image) -> Image.Image:
         out = Image.new("RGB", self.size, C["card"])
         # fit, don't stretch: a 4:3 camera frame in a wide panel gets dark side bars, and the egg keeps its shape
-        fitted = ImageOps.pad(img.convert("RGB"), self.size, Image.BILINEAR, color=(0, 0, 0))
+        fitted = ImageOps.pad(img.convert("RGB"), self.size, Image.LANCZOS, color=(0, 0, 0))   # sharpest downscale
         out.paste(fitted, (0, 0), self._mask)
         return out
 
     def show(self, img: Image.Image | None, empty_text: str = "No image") -> None:
+        self.source = img
+        self.zoom_hint.configure(text="⤢  Tap to enlarge" if img is not None else "")
         if img is None:
             self._img = None
             self.view.configure(image=self._blank, text=empty_text)   # never image=None (CTk bug)
             return
         self._img = ctk.CTkImage(self._rounded(img), size=self.size)
         self.view.configure(image=self._img, text="")
+
+
+class ZoomView(ctk.CTkFrame):
+    """Full-size view of one image over the top of the screen; tap anywhere on it to close.
+    It stops above the Start/Stop/Reset row, so Stop is always reachable."""
+
+    def __init__(self, master, img: Image.Image, title: str, size: tuple[int, int], fonts):
+        super().__init__(master, fg_color=C["well"], corner_radius=0, width=size[0], height=size[1])
+        self.pack_propagate(False)                     # keep the given size whatever the image is
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.pack(fill="x", padx=12, pady=(8, 4))
+        ctk.CTkLabel(head, text=title, text_color="#FFFFFF", font=fonts["title"], height=0).pack(side="left")
+        ctk.CTkLabel(head, text="Tap to close", text_color=C["faint"], font=fonts["hint"], height=0).pack(side="right")
+        head.update_idletasks()
+        box = (size[0] - 16, max(1, size[1] - head.winfo_reqheight() - 20))
+        fitted = ImageOps.contain(img.convert("RGB"), box, Image.LANCZOS)
+        self._img = ctk.CTkImage(fitted, size=fitted.size)
+        view = ctk.CTkLabel(self, text="", image=self._img, fg_color=C["well"])
+        view.pack(expand=True)
+        for w in (self, head, view, *head.winfo_children()):
+            w.bind("<Button-1>", lambda e: self.destroy())
 
 
 class TrayStrip(ctk.CTkCanvas):
@@ -309,6 +343,13 @@ class App(ctk.CTk):
     def __init__(self, cfg: Config, backend: Backend):
         global _family
         ctk.deactivate_automatic_dpi_awareness()      # 1 widget px = 1 screen px, so the layout math holds
+        if sys.platform == "win32":                    # ...but still tell Windows we draw our own pixels, or a laptop at
+            try:                                       # 125 %/150 % stretches the whole window as a bitmap (blurry);
+                import ctypes                          # the Pi is unaffected
+
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            except (AttributeError, OSError):
+                pass
         ctk.set_appearance_mode("light")
         super().__init__(fg_color=C["bg"])
         installed = set(tkfont.families(self))
@@ -401,6 +442,8 @@ class App(ctk.CTk):
         self._label(titles, "Egg Inspector", 13, True).pack(anchor="w")
         if getattr(self.backend, "simulated_results", False):          # bring-up without the trained model
             self._label(titles, "⚠  Simulated results: no model loaded", 8, True, C["amber"]).pack(anchor="w")
+        elif getattr(self.backend, "mode_note", ""):                   # e.g. photos from a folder on a PC
+            self._label(titles, self.backend.mode_note, 8, True, C["blue"]).pack(anchor="w")
         else:
             self._label(titles, "Micro-fissure detection with UV-C disinfection", 8, fg=C["muted"]).pack(anchor="w")
         self.exit_btn = self._button(bar, "Exit", self._quit, size=9, height=30)   # touchscreen has no Esc key
@@ -415,21 +458,33 @@ class App(ctk.CTk):
 
     def _build_images(self, pad: int) -> None:
         gap = pad
-        outer = (self.W - 2 * pad - 2 * gap) // 3
-        inner = outer - 18                                  # border + inner padding
-        size = (inner, int(inner * 0.41))               # short images leave room for the tray row on 480 px screens
+        inner = (self.W - 2 * pad - gap) // 2 - 18          # two panels; minus border + inner padding
+        height = int(((self.W - 2 * pad - 2 * gap) // 3 - 18) * 0.41)   # short images leave room for the tray row on 480 px screens
+        size = (inner, height)
         row = self._row(self)
         row.pack(fill="x", padx=pad, pady=(0, pad))
         fonts = {"dot": self._f(7, True), "title": self._f(9, True), "hint": self._f(8)}
         specs = [("Optical", "transilluminated", "optical", C["amber"]),
-                 ("Infrared", "", "thermal", C["red"]),
-                 ("XGrad-CAM", "heatmap", "heat", C["uv"])]
+                 ("XGrad-CAM", "Mask R-CNN heatmap", "heat", C["uv"])]
         self.panels = {}
         for col, (title, hint, key, accent) in enumerate(specs):
-            panel = ImagePanel(row, title, hint, accent, size, fonts, self._px(10), self._px(16))
-            panel.grid(row=0, column=col, padx=(0 if col == 0 else gap // 2, 0 if col == 2 else gap // 2))
+            panel = ImagePanel(row, title, hint, accent, size, fonts, self._px(10), self._px(16), self._zoom)
+            panel.grid(row=0, column=col, padx=(0 if col == 0 else gap // 2, 0 if col == len(specs) - 1 else gap // 2))
             self.panels[key] = panel
-        row.columnconfigure((0, 1, 2), weight=1, uniform="img")
+        row.columnconfigure(tuple(range(len(specs))), weight=1, uniform="img")
+        self._zoom_fonts = {"title": self._f(11, True), "hint": self._f(9)}
+        self._zoomed: ZoomView | None = None
+
+    def _zoom(self, img: Image.Image, title: str) -> None:
+        self._close_zoom()
+        height = self.btns["start"].master.winfo_y() - self._px(6)      # keep Start/Stop/Reset visible
+        self._zoomed = ZoomView(self, img, title, (self.W, height), self._zoom_fonts)
+        self._zoomed.place(x=0, y=0)
+
+    def _close_zoom(self) -> None:
+        if self._zoomed is not None and self._zoomed.winfo_exists():
+            self._zoomed.destroy()
+        self._zoomed = None
 
     def _build_cards(self, pad: int) -> None:
         row = self._row(self)
@@ -551,7 +606,6 @@ class App(ctk.CTk):
         self.results.clear()
         self.tray.reset()
         self.panels["optical"].show(None, "No image yet")
-        self.panels["thermal"].show(None, "No image yet")
         self.panels["heat"].show(None, "No image yet")
         self._set_verdict("idle")
         self.detail.configure(text="Press Start to inspect the tray")
@@ -587,18 +641,21 @@ class App(ctk.CTk):
         r = self.results[i]
         self.tray.select(i)
         self.panels["optical"].show(r.optical)
-        self.panels["thermal"].show(r.thermal, "Infrared camera not connected")
         self.panels["heat"].show(r.heatmap, "No defect, no heatmap")
         bad = r.defective
         self._set_verdict("bad" if bad else "ok")
-        what = f"Micro-fissure at {r.angle_deg:.0f}°" if bad else "No micro-fissure"
-        self.detail.configure(text=f"{what}  ·  {r.views} views  ·  {r.latency_ms / 1000:.1f} s")
+        if r.source:                                   # photo test mode: no spin, show which file it was
+            what = f"{'Micro-fissure' if bad else 'No micro-fissure'}  ·  {r.source}"
+        else:
+            what = f"Micro-fissure at {r.angle_deg:.0f}°  ·  {r.views} views" if bad else f"No micro-fissure  ·  {r.views} views"
+        self.detail.configure(text=f"{what}  ·  {r.latency_ms / 1000:.1f} s")
         self.egg_tag.configure(text=f"Egg {i + 1} of {self.cfg.egg_count}")
         self.conf_val.configure(text=f"{r.confidence * 100:.1f}%")
         self._set_bar(self.conf_bar, r.confidence, C["red"] if bad else C["green"])
 
     # --------------------------------------------------------------- buttons
     def _btn_start(self) -> None:
+        self._close_zoom()
         self._cancel_confirm()
         self._reset_view()
         self._set_running(True)
@@ -614,6 +671,7 @@ class App(ctk.CTk):
         if self.ctrl.running:
             return
         self._cancel_confirm()
+        self._close_zoom()
         self.backend.clear_leds()
         self._reset_view()
 

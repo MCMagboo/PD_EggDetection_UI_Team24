@@ -13,6 +13,10 @@ egg-venv/
 *.onnx
 egg_camera_test.jpg
 
+# Model API credentials: never commit
+*.env
+.env*
+
 # Editor / OS
 .vscode/
 .DS_Store

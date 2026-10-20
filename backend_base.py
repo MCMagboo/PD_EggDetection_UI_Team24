@@ -1,12 +1,12 @@
 """The contract between the UI/controller and the hardware + model.
 
 MockBackend and PiBackend both implement this, so the UI never changes when
-you swap the fake data for the real camera, motors, UV-C relay and SOLOv2 model.
+you swap the fake data for the real camera, motors, UV-C relay and the Mask R-CNN model API.
 
 Inspection mechanics: the camera is fixed. For each egg the tray (centre shaft) brings
 its geared holder to the camera station, then the spin motor there meshes with the holder
-gear and turns the egg 360 deg upright in `cfg.frames_per_egg` steps, with one optical +
-infrared capture per step.
+gear and turns the egg 360 deg upright in `cfg.frames_per_egg` steps, with one optical
+capture per step.
 
 The tray only moves forward during a batch (holder 1 -> 10, 324 deg) and returns to
 holder 1 in REVERSE afterwards, so it never turns a full revolution in one direction

@@ -1,4 +1,4 @@
-"""Run with:  python -m egg_inspector [--backend mock|pi] [--no-model | --fake-vision] [--windowed] [--size 800x480] [--fast]"""
+"""Run with:  python -m egg_inspector [--backend mock|pi|images] [--images DIR] [--no-model | --fake-vision] [--windowed] [--size 800x480] [--fast]"""
 import argparse
 import dataclasses
 import logging
@@ -10,8 +10,10 @@ from .ui import App
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Duck egg inspection touchscreen app")
-    ap.add_argument("--backend", choices=["mock", "pi"], default="mock",
-                    help="mock = fake images (no model/hardware); pi = real camera/GPIO/model")
+    ap.add_argument("--backend", choices=["mock", "pi", "images"], default="mock",
+                    help="mock = fake images (no model/hardware); pi = real camera/GPIO + model API; "
+                         "images = photos from --images through the real model API (no hardware)")
+    ap.add_argument("--images", help="with --backend images: folder of egg photos (.jpg/.png), one per tray slot")
     ap.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen (for development)")
     ap.add_argument("--size", default="800x480", help="window size when --windowed, e.g. 1024x600")
     sim = ap.add_mutually_exclusive_group()
@@ -24,6 +26,8 @@ def main() -> None:
     args = ap.parse_args()
     if args.backend != "pi" and (args.no_model or args.fake_vision):
         ap.error("--no-model and --fake-vision need --backend pi")
+    if (args.backend == "images") != bool(args.images):
+        ap.error("--backend images and --images DIR go together")
     logging.basicConfig(level=logging.INFO)
 
     w, h = (int(v) for v in args.size.lower().split("x"))
@@ -35,6 +39,11 @@ def main() -> None:
         if args.backend == "mock":
             from .mock_backend import MockBackend
             backend = MockBackend(cfg, args.seed)
+        elif args.backend == "images":
+            from .image_backend import ImageFolderBackend, find_photos
+            photos = find_photos(args.images)
+            cfg = dataclasses.replace(cfg, egg_count=min(cfg.egg_count, len(photos)))
+            backend = ImageFolderBackend(cfg, photos)
         elif args.no_model:
             from .pi_backend import NoModelPiBackend
             backend = NoModelPiBackend(cfg)
@@ -48,8 +57,8 @@ def main() -> None:
     except NotImplementedError as exc:
         sys.exit(f"Not written yet: {exc}\nUntil the model is ready, add --no-model to use the real camera "
                  "and hardware with simulated verdicts.")
-    except Exception as exc:                          # camera / GPIO problems: say what, not a traceback
-        sys.exit(f"Could not start the hardware: {type(exc).__name__}: {exc}")
+    except Exception as exc:                          # camera / GPIO / model API problems: say what, not a traceback
+        sys.exit(f"Could not start: {type(exc).__name__}: {exc}")
 
     App(cfg, backend).mainloop()
 
