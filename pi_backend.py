@@ -26,7 +26,7 @@ from PIL import Image
 from .backend_base import Progress
 from .config import ACTIVE_HIGH, PINS, Config
 from .datatypes import EggResult
-from .model_client import CrackModel, ViewScore
+from .model_client import ViewScore, load_model
 
 View = tuple[Image.Image, "Future[ViewScore]"]      # captured frame + its pending model verdict
 
@@ -210,9 +210,9 @@ class PiBackend:
     def _optical_frame(self) -> Image.Image:
         return Image.fromarray(self.cam.capture_array()[..., ::-1])   # Picamera2 "RGB888" is BGR order
 
-    # ---- model (Mask R-CNN + XGrad-CAM on the Modal API) ------------------
-    def _load_model(self) -> CrackModel:
-        return CrackModel.from_env(self.cfg.model_api_url, self.cfg.detect_threshold)
+    # ---- model (Mask R-CNN + XGrad-CAM: local weights or the Modal API) -----
+    def _load_model(self):
+        return load_model(self.cfg)
 
     def _predict(self, optical: Image.Image) -> ViewScore:
         """Crack verdict for one view; runs on the model thread pool."""

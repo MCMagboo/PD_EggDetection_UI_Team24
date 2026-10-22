@@ -131,24 +131,42 @@ class CrackModel:
         self.http.close()
 
 
+def load_model(cfg):
+    """The crack model chosen by cfg.model_source: local weights file or the model API."""
+    if cfg.model_source == "api":
+        return CrackModel.from_env(cfg.model_api_url, cfg.detect_threshold)
+    if cfg.model_source != "local":
+        raise ValueError(f"model_source must be 'local' or 'api', not {cfg.model_source!r}")
+    from pathlib import Path
+
+    from .local_model import LocalCrackModel
+
+    path = Path(cfg.model_path)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent / path
+    return LocalCrackModel(path, cfg.detect_threshold)
+
+
 def main() -> None:
     import argparse
 
     from .config import Config
 
-    ap = argparse.ArgumentParser(description="Send one photo to the model API and print the verdict")
+    ap = argparse.ArgumentParser(description="Score one photo with the crack model and print the verdict")
     ap.add_argument("image")
+    ap.add_argument("--model", choices=["local", "api"], default=Config.model_source,
+                    help="local = model_best.pth on this machine (default); api = the Modal model API")
     ap.add_argument("--heatmap", help="save the XGrad-CAM overlay here (only produced for cracks)")
     args = ap.parse_args()
     if not os.path.isfile(args.image):
         ap.error(f"photo not found: {args.image}")
-    cfg = Config()
-    model = CrackModel.from_env(cfg.model_api_url, cfg.detect_threshold)
+    cfg = Config(model_source=args.model)
+    model = load_model(cfg)
     try:
         t0 = time.perf_counter()
         view = model.predict(open_photo(args.image))
         print(f"{'CRACK' if view.cracked else 'no crack'}  score {view.score:.3f}  "
-              f"({time.perf_counter() - t0:.1f} s incl. upload)")
+              f"({time.perf_counter() - t0:.1f} s, {args.model} model)")
         if view.heatmap is not None and args.heatmap:
             view.heatmap.save(args.heatmap)
             print(f"Saved heatmap to {args.heatmap}")

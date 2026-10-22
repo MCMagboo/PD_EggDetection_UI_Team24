@@ -70,7 +70,7 @@ say "Creating Python environment in $VENV"
 mkdir -p "$DATA"
 python3 -m venv --system-site-packages "$VENV"
 "$VENV/bin/pip" install --quiet --disable-pip-version-check -r "$DEPLOY_DIR/requirements.txt"
-"$VENV/bin/python" -c "import customtkinter, numpy, PIL.ImageTk, httpx, pydantic" \
+"$VENV/bin/python" -c "import customtkinter, numpy, PIL.ImageTk, httpx, pydantic, torch, torchvision" \
     || { echo "Dependency check failed; see the messages above." >&2; exit 1; }
 
 say "Installing launcher (backend: $BACKEND)"
@@ -104,8 +104,8 @@ else
     rm -f "$AUTOSTART_FILE"
 fi
 
-if [ "$BACKEND" = pi ] && [ ! -f "$HOME/.config/egg_inspector/model.env" ]; then
-    say "Model API credentials not set yet: create ~/.config/egg_inspector/model.env (see README)"
+if [ "$BACKEND" = pi ] && [ ! -f "$PKG_DIR/model_best.pth" ]; then
+    say "Model weights missing: copy model_best.pth into $PKG_DIR (see README)"
 fi
 
 say "Done. Double-tap 'Egg Inspector' on the desktop (also in Menu > Accessories)."

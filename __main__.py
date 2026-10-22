@@ -13,6 +13,8 @@ def main() -> None:
     ap.add_argument("--backend", choices=["mock", "pi", "images"], default="mock",
                     help="mock = fake images (no model/hardware); pi = real camera/GPIO + model API; "
                          "images = photos from --images through the real model API (no hardware)")
+    ap.add_argument("--model", choices=["local", "api"], default=None,
+                    help="crack model: local = model_best.pth on this machine (default), api = the Modal model API")
     ap.add_argument("--images", help="with --backend images: folder of egg photos (.jpg/.png), one per tray slot")
     ap.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen (for development)")
     ap.add_argument("--size", default="800x480", help="window size when --windowed, e.g. 1024x600")
@@ -32,6 +34,8 @@ def main() -> None:
 
     w, h = (int(v) for v in args.size.lower().split("x"))
     cfg = Config(screen_w=w, screen_h=h, fullscreen=not args.windowed)
+    if args.model:
+        cfg = dataclasses.replace(cfg, model_source=args.model)
     if args.fast:
         cfg = dataclasses.replace(cfg, time_scale=0.25)
 

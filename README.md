@@ -22,8 +22,9 @@ GPIO or model.
 
 | Option | Meaning |
 |---|---|
-| `--backend mock\|pi\|images` | `mock` = fake data (default); `pi` = real camera, GPIO, UV-C relay and the model API; `images` = your photos through the real model, no hardware |
+| `--backend mock\|pi\|images` | `mock` = fake data (default); `pi` = real camera, GPIO, UV-C relay and the model; `images` = your photos through the real model, no hardware |
 | `--images DIR` | With `--backend images`: folder of egg photos, one per tray slot |
+| `--model local\|api` | Crack model: `local` = `model_best.pth` on this machine (default); `api` = the Modal model API |
 | `--no-model` | With `--backend pi`: real camera, motors, LEDs, buzzer and UV-C; crack verdicts simulated (no network needed) |
 | `--fake-vision` | With `--backend pi`: like `--no-model` but with drawn eggs instead of the camera |
 | `--windowed` | Run in a window instead of fullscreen |
@@ -33,7 +34,7 @@ GPIO or model.
 
 ## Testing the hardware on the Pi (no install needed)
 
-Use this to bring up the motors, lights, sensors and UV-C before the model is ready. Run it straight from
+Use this to bring up the motors, lights, sensors and UV-C without the model. Run it straight from
 VS Code (Remote-SSH or a terminal on the Pi). The desktop-app install below is **not** needed for this.
 
 ### 1. Set the pins and relay polarity first
@@ -113,7 +114,7 @@ The app opens the camera with Picamera2, which supports the IMX219 directly; no 
   on its shell, and the model sees those differences too. Before the model goes in, lock the exposure, gain and
   white balance, and use the same settings for training photos as for photos the app scores. See *Known open items*.
 
-### 4. Run the whole app on the real rig (before the model is ready)
+### 4. Run the whole app on the real rig (simulated verdicts)
 
 When each device works on its own:
 
@@ -131,38 +132,68 @@ and UV-C**:
 4. The tray reverses to holder 1.
 5. UV-C runs automatically if a crack was found (door must be closed).
 
-Only the **crack verdicts are simulated** until the model is integrated: about one egg in four gets flagged so the
+With `--no-model`, only the **crack verdicts are simulated**: about one egg in four gets flagged so the
 reject and UV-C paths run. The header shows **"Simulated results: no model loaded"** in amber the whole time.
 
 - Add `--windowed` to run in a window instead of fullscreen (e.g. over VS Code Remote / VNC).
 - Use `--fake-vision` instead of `--no-model` to also replace the camera with drawn eggs, e.g. while the camera
   is unplugged.
-- Without either flag, the app sends every view to the model API (see *The crack-detection model*). It stops
-  with a message if the API credentials are missing.
+- Without either flag, the app runs the trained model on every view (see *The crack-detection model*). It
+  stops with a message if `model_best.pth` or PyTorch is missing.
 - **No camera found:** the app stops with a message. Power off, check the ribbon cable, then run
   `rpicam-hello --list-cameras`.
 - **Tray faults:** the app shows a fault if the home or slot sensor never triggers. Check them with the
   Sensors item in the test menu.
 
-## Install on the Raspberry Pi (desktop app)
+## Deploy on the Raspberry Pi
 
-*Not needed yet.* This is for when the model is integrated and the station is ready for operators.
+Needs **64-bit** Raspberry Pi OS (PyTorch has no 32-bit build): `uname -m` must print `aarch64`.
+Commands are Pi bash unless marked PowerShell.
 
-1. Copy the whole `egg_inspector` folder somewhere permanent, e.g. `~/egg_inspector`. Keep that folder name;
-   the icon runs the app from there.
-2. Install:
+1. **Get the code.** The folder must be named `egg_inspector`, because the icon runs the app from there:
+   ```bash
+   git clone https://github.com/MCMagboo/PD_EggDetection_UI_Team24.git ~/egg_inspector   # first time
+   cd ~/egg_inspector && git pull                                                          # later updates
+   ```
+2. **Copy the model weights.** `model_best.pth` (176 MB) isn't in GitHub. From the PC (PowerShell), or use a
+   USB stick:
+   ```powershell
+   scp "C:\path\to\model_best.pth" <user>@<pi-ip>:~/egg_inspector/
+   ```
+3. **Install the packages, PyTorch included.** The download is large and takes a while:
+   ```bash
+   python3 -m venv --system-site-packages ~/egg-venv      # skip if it already exists
+   ~/egg-venv/bin/pip install -r ~/egg_inspector/deploy/requirements.txt
+   ```
+4. **Time the model on the Pi.** Take a photo with the test menu's **Camera: test photo**, then:
+   ```bash
+   cd ~
+   ~/egg-venv/bin/python -m egg_inspector.model_client ~/egg_camera_test.jpg --heatmap heat.png
+   ```
+   It prints the verdict and the seconds taken. Each egg takes about `frames_per_egg` × that time. If it's too
+   slow, lower `frames_per_egg` in `config.py`, or use the model API (`--model api`, see *The crack-detection
+   model*).
+5. **Check the wiring settings before connecting the UV-C lamp:** `PINS` and `ACTIVE_HIGH` in `config.py` must
+   match the schematic and relay boards (see *Testing the hardware on the Pi*). Also calibrate `spin_seconds`.
+6. **Run one full tray from the terminal:**
+   ```bash
+   cd ~
+   ~/egg-venv/bin/python -m egg_inspector --backend pi
+   ```
+7. **Install the desktop app** once step 6 works:
    ```bash
    cd ~/egg_inspector
-   bash deploy/install.sh
+   bash deploy/install.sh --backend pi          # add --autostart to open it at login (kiosk)
    ```
-3. Double-tap **Egg Inspector** on the desktop (also in Menu > Accessories).
+   Then double-tap **Egg Inspector** on the desktop (also in Menu > Accessories). The installer makes its own
+   venv at `~/.local/share/egg_inspector/venv` and warns if `model_best.pth` is missing.
 
 Re-run the installer to change options:
 
 | Option | Meaning |
 |---|---|
 | *(none)* | Mock backend; works before the model and hardware are ready |
-| `--backend pi` | Real hardware + model API (set up `model.env` first, see *The crack-detection model*) |
+| `--backend pi` | The station: real hardware + the trained model (needs `model_best.pth` + PyTorch, see *The crack-detection model*) |
 | `--autostart` | Open the app automatically at login (kiosk mode) |
 | `--no-apt` | Skip `apt-get` (offline or already installed) |
 | `--uninstall` | Remove icons, autostart entry and venv; keeps the source folder |
@@ -227,7 +258,8 @@ Safety rules in software:
 | `mock_backend.py` | Fake images for development without hardware |
 | `image_backend.py` | `--backend images`: photos from a folder through the real model API, no hardware |
 | `pi_backend.py` | Real camera, GPIO, UV-C relay; sends views to the model. Also `NoModelPiBackend` (real camera + hardware, simulated verdicts) and `FakeVisionPiBackend` (no camera) |
-| `model_client.py` | Client for the Mask R-CNN + XGrad-CAM model API; also a one-photo command-line check |
+| `local_model.py` | Runs `model_best.pth` (Mask R-CNN + XGrad-CAM) on this machine; the default |
+| `model_client.py` | Client for the model API, `load_model()` (picks local or API), and a one-photo command-line check |
 | `api_contract.py` | The API's response format, copied unchanged from the model team's client |
 | `datatypes.py` | `EggResult`, `Summary`, `UvcOutcome`, `Event` |
 | `deploy/` | Pi installer, launcher script, icon, pip requirements |
@@ -293,95 +325,122 @@ the Pi and lower `frames_per_egg` if that's too slow.
 
 ## The crack-detection model
 
-The model is **Mask R-CNN + XGrad-CAM**, trained and deployed by the model team on a Modal GPU server. The Pi
-doesn't run it and doesn't need PyTorch. `model_client.py` sends each view as a JPEG to `POST <url>/predict`
-and gets back:
+The model is **Mask R-CNN (ResNet-50 FPN) + XGrad-CAM**, trained by the model team. It can run two ways, chosen by
+`model_source` in `config.py` or `--model local|api`. Both give the same answers:
 
-- the crack decision and the max crack score,
-- an XGrad-CAM overlay (`backbone.body.layer4[-1]`) when a crack is found. This is shown in the XGrad-CAM panel.
+| | `local` (default) | `api` |
+|---|---|---|
+| Where it runs | On this machine (Pi or PC), CPU | Model team's Modal GPU server |
+| Needs | `model_best.pth` in the `egg_inspector` folder + PyTorch | Internet + Modal token pair |
+| Speed per view (laptop) | ~4 s, ~7 s when a crack is found (heatmap) | ~3 s warm; 15 s to minutes when the server is cold |
+| Code | `local_model.py` | `model_client.py` (replies checked against `api_contract.py`) |
 
-Every reply is checked against `api_contract.py`.
+`model_best.pth` is the same checkpoint the API serves (epoch 14, SHA-256 `f3e4c058…c8b9c`). Each view gives:
 
-### Setting it up on the Pi
+- the crack decision and the max crack score (cracked if it is at or above the threshold, 0.83 by default),
+- an XGrad-CAM overlay on `backbone.body.layer4[-1]` when a crack is found. This is shown in the XGrad-CAM panel.
 
-The API needs a Modal proxy token pair (a key starting `wk-` and a secret starting `ws-`); ask the model team
-for it. Run these on the Pi:
+### Local model (default)
 
-1. Install the client packages (`httpx`, `pydantic`) into the app's venv:
-   ```bash
-   ~/egg-venv/bin/pip install -r ~/egg_inspector/deploy/requirements.txt
-   ```
-2. Create the credentials file and make it readable only by you:
-   ```bash
-   mkdir -p ~/.config/egg_inspector
-   nano ~/.config/egg_inspector/model.env
-   chmod 600 ~/.config/egg_inspector/model.env
-   ```
-   Put the token pair in it:
-   ```bash
-   MASKRCNN_API_KEY=wk-...
-   MASKRCNN_API_SECRET=ws-...
-   # MASKRCNN_API_URL=https://...   (only if the endpoint changes; default is model_api_url in config.py)
-   ```
-3. Load the file into the terminal and score one photo to check the connection. Run this from the folder that
-   contains `egg_inspector/`:
-   ```bash
-   cd ~
-   set -a; . ~/.config/egg_inspector/model.env; set +a
-   ~/egg-venv/bin/python -m egg_inspector.model_client ~/egg_camera_test.jpg --heatmap heat.png
-   ```
-   It prints `CRACK` or `no crack` with the score, and saves the heatmap if a crack was found.
-4. Run the app with the real model:
-   ```bash
-   ~/egg-venv/bin/python -m egg_inspector --backend pi
-   ```
-   The desktop icon (`deploy/run.sh`) loads `model.env` automatically, so step 3's `set -a` line is only
-   needed in a terminal.
+`model_best.pth` is 176 MB, so it isn't in GitHub (`.gitignore` blocks `*.pth`). Get it from the model team and
+put it in the `egg_inspector` folder next to `config.py`. Then install PyTorch.
+
+On the Pi (bash):
+
+```bash
+~/egg-venv/bin/pip install -r ~/egg_inspector/deploy/requirements.txt
+cd ~
+~/egg-venv/bin/python -m egg_inspector.model_client ~/egg_camera_test.jpg --heatmap heat.png
+~/egg-venv/bin/python -m egg_inspector --backend pi
+```
+
+On a PC (PowerShell), from the folder that contains `egg_inspector\`. The `--index-url` gets the CPU build,
+which is much smaller than the default GPU build:
+
+```powershell
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install -r egg_inspector\deploy\requirements.txt
+python -m egg_inspector.model_client "C:\path\to\egg.jpg" --heatmap heat.png
+```
+
+The check prints `CRACK` or `no crack` with the score, and saves the heatmap if a crack was found.
+
+About the checkpoint: it holds `{"model": weights, "epoch", "validation_ap", "config_sha256"}`. Its mask-head
+layers are named `deconv` / `mask_logits` instead of torchvision's `conv5_mask` / `mask_fcn_logits`.
+`local_model.py` renames them on load; every layer then matches exactly. The file is opened with
+`weights_only=True`, so only tensors are read and no code inside it runs.
+
+### Using the model API instead (optional)
+
+Run with `--model api`, or set `model_source = "api"`. The API needs a Modal proxy token pair (a key starting
+`wk-` and a secret starting `ws-`); ask the model team for it.
+
+On the Pi, put it in a private file:
+
+```bash
+mkdir -p ~/.config/egg_inspector
+nano ~/.config/egg_inspector/model.env
+chmod 600 ~/.config/egg_inspector/model.env
+```
+
+```bash
+MASKRCNN_API_KEY=wk-...
+MASKRCNN_API_SECRET=ws-...
+# MASKRCNN_API_URL=https://...   (only if the endpoint changes; default is model_api_url in config.py)
+```
+
+The desktop icon (`deploy/run.sh`) loads this file automatically. In a terminal, load it first:
+
+```bash
+cd ~
+set -a; . ~/.config/egg_inspector/model.env; set +a
+~/egg-venv/bin/python -m egg_inspector --backend pi --model api
+```
+
+On a PC (PowerShell):
+
+```powershell
+$env:MASKRCNN_API_KEY = 'wk-...'
+$env:MASKRCNN_API_SECRET = 'ws-...'
+python -m egg_inspector.model_client "C:\path\to\egg.jpg" --model api --heatmap heat.png
+```
 
 **Keep the token pair private.** Never commit it (`.gitignore` already blocks `*.env` files), and don't put
 it in a shared or public folder or chat. Anyone who has it can use the model server. If it leaks, ask the
 model team to create a new pair and delete the old one, then update `model.env`.
 
-### Checking the connection from a PC
-
-In PowerShell, from the folder that contains `egg_inspector\`:
-
-```powershell
-pip install -r egg_inspector\deploy\requirements.txt
-$env:MASKRCNN_API_KEY = 'wk-...'
-$env:MASKRCNN_API_SECRET = 'ws-...'
-python -m egg_inspector.model_client C:\path\to\egg.jpg --heatmap heat.png
-```
+The client retries a dropped connection or a busy server (502/503/504) up to 3 times before showing an error.
 
 ### Testing the real model in the app on a PC
 
 `--backend images` runs the whole app on a laptop with **real model results**. Nothing is simulated. Put up to
-10 egg photos (.jpg/.png, or iPhone .HEIC after `pip install pillow-heif`) in a folder; each tray slot gets one photo, in file-name order. Each photo goes to the
-model API, and the screen shows its real verdict, confidence and XGrad-CAM heatmap. There are no motors, so LEDs,
-buzzer and UV-C are only logged in the terminal.
+10 egg photos (.jpg/.png, or iPhone .HEIC after `pip install pillow-heif`) in a folder; each tray slot gets one
+photo, in file-name order. The screen shows each photo's real verdict, confidence and XGrad-CAM heatmap. There are
+no motors, so LEDs, buzzer and UV-C are only logged in the terminal.
 
 ```powershell
 cd C:\Users\<you>\OneDrive\Desktop
-$env:MASKRCNN_API_KEY = 'wk-...'
-$env:MASKRCNN_API_SECRET = 'ws-...'
-python -m egg_inspector --backend images --images C:\path\to\photos --windowed
+python -m egg_inspector --backend images --images "C:\path\to\photos" --windowed
 ```
 
-The header shows "Test mode: N photos from <folder>, real model". The result card shows which photo each egg is.
-Photos larger than 2048 px are scaled down before upload, because the API rejects bigger images (HTTP 413).
+Add `--model api` to use the API instead (set the two `$env:` variables first). The header shows
+"Test mode: N photos from <folder>, local model" (or "model API"). The result card shows which photo each egg is.
+Photos larger than 2048 px are scaled down first; the API rejects bigger images (HTTP 413).
 
 ### Settings and timing (`config.py`)
 
 | Setting | Meaning |
 |---|---|
+| `model_source` | `"local"` (default) or `"api"` |
+| `model_path` | Local weights file; relative paths are inside the `egg_inspector` folder |
 | `detect_threshold` | `None` uses the model's validated threshold (0.83). A number from 0.01 to 0.99 overrides it. Because an egg is rejected if *any* view crosses it, check false rejects per egg, not per image. |
 | `model_api_url` | Base URL of the deployed API (without `/predict`) |
-| `model_parallel` | Views sent at once; 4 lets uploads overlap the spin |
+| `model_parallel` | API only: views sent at once; 4 lets uploads overlap the spin |
 
-- **Speed:** about 3 s per view when the server is warm. The first request after an idle period waits for the GPU
-  to start (about 15 s), so the first egg of the day is slower.
-- **Network:** the Pi needs internet access during inspection. If the API can't be reached, the batch stops with
-  an error on screen. Use `--no-model` to run the rig offline.
+- **Speed on the Pi (local):** not measured yet. A Pi 5 CPU is several times slower than a laptop, so expect
+  roughly 10–30 s per view. With 8 views per egg that is minutes per egg. Measure one tray. If it's too slow, lower
+  `frames_per_egg`, or use `--model api` on the Pi.
+- **Network:** only the API needs internet. If it can't be reached, the batch stops with an error on screen.
 - **Camera settings:** the model should see photos like the ones it was trained on: same focus, backlight,
   exposure and white balance. Share some photos from the station's IMX219 with the model team.
 

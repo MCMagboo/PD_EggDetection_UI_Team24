@@ -1,7 +1,7 @@
-"""Test backend for a PC: photos from a folder go through the REAL model API, no Pi hardware needed.
+"""Test backend for a PC: photos from a folder go through the REAL model (local or API), no Pi hardware needed.
 
 Each tray slot gets one photo (sorted by file name; the tray shrinks if there are fewer than egg_count).
-Verdicts, confidence and XGrad-CAM heatmaps all come from the deployed Mask R-CNN; nothing is simulated.
+Verdicts, confidence and XGrad-CAM heatmaps all come from the trained Mask R-CNN; nothing is simulated.
 Motors, LEDs, buzzer and UV-C are only logged.
 
     python -m egg_inspector --backend images --images C:\\path\\to\\photos --windowed
@@ -17,7 +17,7 @@ from pathlib import Path
 from .backend_base import Progress
 from .config import Config
 from .datatypes import EggResult
-from .model_client import CrackModel, open_photo
+from .model_client import load_model, open_photo
 from .pi_backend import PiBackend
 
 log = logging.getLogger(__name__)
@@ -38,12 +38,13 @@ def find_photos(folder: str | Path) -> list[Path]:
 class ImageFolderBackend:
     def __init__(self, cfg: Config, photos: list[Path]):
         self.cfg, self.photos = cfg, photos[:cfg.egg_count]
-        self.mode_note = f"Test mode: {len(self.photos)} photos from {photos[0].parent.name}, real model"
-        self.model: CrackModel | None = None
+        where = "local model" if cfg.model_source == "local" else "model API"
+        self.mode_note = f"Test mode: {len(self.photos)} photos from {photos[0].parent.name}, {where}"
+        self.model = None
         self.pool = ThreadPoolExecutor(1, thread_name_prefix="model")
 
     def prepare(self) -> None:
-        self.model = CrackModel.from_env(self.cfg.model_api_url, self.cfg.detect_threshold)
+        self.model = load_model(self.cfg)
         log.info("Image test mode: %d photos", len(self.photos))
 
     def eggs_loaded(self) -> bool:
