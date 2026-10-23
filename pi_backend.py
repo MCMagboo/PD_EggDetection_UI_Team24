@@ -163,7 +163,7 @@ class PiBackend:
         view = scores[best]
         return EggResult(index, view.cracked, view.score if view.cracked else 1 - view.score, views[best][0],
                          view.heatmap, (time.perf_counter() - t0) * 1000, views=len(views),
-                         angle_deg=best * 360 / len(views))
+                         angle_deg=best * 360 / len(views), facts=view.facts)
 
     def _spin_and_capture(self, egg: str, stop: threading.Event, progress: Progress) -> list[View] | None:
         """One full turn in equal steps; capture while the egg is still (no motion blur).

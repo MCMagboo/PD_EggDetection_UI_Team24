@@ -6,17 +6,22 @@
 #   bash deploy/install.sh --backend webcam [--camera /dev/videoN]   # USB webcam + Live test, no motors
 #   bash deploy/install.sh --autostart     # also open the app automatically at login (kiosk)
 #   bash deploy/install.sh --no-apt        # skip apt-get (offline / already installed)
+#   bash deploy/install.sh --no-slm        # skip Ollama + the small language model (heatmap explanations)
 #   bash deploy/install.sh --uninstall     # remove icons, autostart entry and venv
+#
+# Later updates: bash deploy/update.sh (git pull + this installer with the same options).
 #
 # Re-run it any time to change the options. The app runs from wherever this folder lives,
 # so keep it somewhere permanent (e.g. ~/egg_inspector) before installing.
 set -euo pipefail
 
+ORIG_ARGS="$*"
 BACKEND=mock
 AUTOSTART=0
 APT=1
 UNINSTALL=0
 CAMERA=
+SLM=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --backend)   BACKEND="${2:-}"; shift 2 ;;
@@ -24,7 +29,8 @@ while [ $# -gt 0 ]; do
         --no-apt)    APT=0; shift ;;
         --uninstall) UNINSTALL=1; shift ;;
         --camera)    CAMERA="${2:-}"; shift 2 ;;
-        -h|--help)   sed -n '2,14p' "$0"; exit 0 ;;
+        --no-slm)    SLM=0; shift ;;
+        -h|--help)   sed -n '2,17p' "$0"; exit 0 ;;
         *)           echo "Unknown option: $1 (try --help)" >&2; exit 2 ;;
     esac
 done
@@ -61,7 +67,7 @@ chmod +x "$DEPLOY_DIR/run.sh"
 
 if [ "$APT" = 1 ]; then
     say "Installing system packages (needs sudo)"
-    pkgs=(python3-venv python3-tk python3-pil python3-pil.imagetk python3-numpy fonts-dejavu-core zenity)
+    pkgs=(python3-venv python3-tk python3-pil python3-pil.imagetk python3-numpy fonts-dejavu-core zenity curl)
     [ "$BACKEND" = pi ] && pkgs+=(python3-picamera2 python3-gpiozero)
     [ "$BACKEND" != mock ] && pkgs+=(python3-opencv v4l-utils)      # USB webcam (Live test)
     sudo apt-get update
@@ -72,10 +78,34 @@ fi
 
 say "Creating Python environment in $VENV"
 mkdir -p "$DATA"
+echo "$ORIG_ARGS" >"$DATA/install-args"         # update.sh reinstalls with the same options
 python3 -m venv --system-site-packages "$VENV"
 "$VENV/bin/pip" install --quiet --disable-pip-version-check -r "$DEPLOY_DIR/requirements.txt"
 "$VENV/bin/python" -c "import customtkinter, numpy, PIL.ImageTk, httpx, pydantic, torch, torchvision" \
     || { echo "Dependency check failed; see the messages above." >&2; exit 1; }
+
+# The small language model that words the heatmap explanation runs in Ollama on this machine.
+# Without it the app still works and explains the heatmap in fixed wording.
+if [ "$BACKEND" != mock ] && [ "$SLM" = 1 ]; then
+    # Pick the SLM size this Pi's memory can hold next to the crack model (~1.6 GB peak) and the desktop.
+    MEM_MB="$(awk '/MemTotal/ {print int($2 / 1024)}' /proc/meminfo)"
+    if [ "$MEM_MB" -ge 6000 ]; then SLM_MODEL=qwen2.5:1.5b; SLM_SIZE="about 1 GB"
+    elif [ "$MEM_MB" -ge 3000 ]; then SLM_MODEL=qwen2.5:0.5b; SLM_SIZE="about 400 MB"
+    else SLM_MODEL=; say "Only $MEM_MB MB of RAM: no SLM; explanations use the fixed wording (same facts)"
+    fi
+    if [ -n "$SLM_MODEL" ]; then
+        if ! command -v ollama >/dev/null 2>&1; then
+            say "Installing Ollama (runs the small language model on this Pi; needs internet this once)"
+            curl -fsSL https://ollama.com/install.sh | sh \
+                || say "Ollama install failed; explanations use fixed wording. Retry later or use --no-slm."
+        fi
+        if command -v ollama >/dev/null 2>&1; then
+            say "Downloading the SLM $SLM_MODEL for $MEM_MB MB of RAM (once, $SLM_SIZE; offline after this)"
+            ollama pull "$SLM_MODEL" \
+                || say "Could not download $SLM_MODEL; explanations use fixed wording until: ollama pull $SLM_MODEL"
+        fi
+    fi
+fi
 
 ARGS="--backend $BACKEND"
 if [ "$BACKEND" = webcam ]; then
@@ -120,6 +150,10 @@ fi
 if [ "$BACKEND" != mock ] && [ ! -f "$PKG_DIR/model_best_quantized.pth" ]; then
     say "Model weights missing: $PKG_DIR/model_best_quantized.pth (it comes with git pull; see README)"
 fi
+
+say "Checking that everything runs on this Pi without internet"
+(cd "$(dirname "$PKG_DIR")" && "$VENV/bin/python" -m "$(basename "$PKG_DIR").selfcheck") \
+    || say "Self-check found a problem (see above); fix it while you still have internet."
 
 say "Done. Double-tap 'Egg Inspector' on the desktop (also in Menu > Accessories)."
 say "Logs: ~/.local/state/egg_inspector/app.log"

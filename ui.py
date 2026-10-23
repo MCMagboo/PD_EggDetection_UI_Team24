@@ -26,6 +26,9 @@ from .backend_base import Backend
 from .config import Config
 from .controller import InspectionController
 from .datatypes import EggResult, Event, Summary, UvcOutcome
+from .explain import Explainer, fact_lines, interpret, summary
+from .local_model import VALIDATED_THRESHOLD
+from .image_backend import OVEREXPOSED, TOO_BRIGHT, burnt
 
 C = {
     "bg": "#EEF2F7", "card": "#FFFFFF", "subtle": "#F3F6FA", "line": "#E3E8EF", "track": "#E3E8EF",
@@ -148,8 +151,10 @@ def _badge(px: int, state: str) -> Image.Image:
 class ImagePanel(ctk.CTkFrame):
     """One image card. Tapping it calls on_tap(image, title) so the app can show the image full size."""
 
-    def __init__(self, master, title, hint, accent, size, fonts, radius, corner, on_tap=None):
+    def __init__(self, master, title, hint, accent, size, fonts, radius, corner, on_tap=None, text_width=0):
         super().__init__(master, fg_color=C["card"], border_color=C["line"], border_width=1, corner_radius=corner)
+        full = size
+        size = (size[0] - text_width, size[1])                      # with text_width, the text takes the right side
         self.size, self.title, self.on_tap = size, title, on_tap
         self.source: Image.Image | None = None             # full-resolution image behind the thumbnail
         mask = Image.new("L", (size[0] * SS, size[1] * SS), 0)
@@ -157,7 +162,7 @@ class ImagePanel(ctk.CTkFrame):
         self._mask = _downsample(mask, size)
         self._blank = ctk.CTkImage(self._rounded(Image.new("RGB", size, C["subtle"])), size=size)
         self._img = None
-        head = ctk.CTkFrame(self, fg_color="transparent")
+        head = self.head = ctk.CTkFrame(self, fg_color="transparent")
         head.pack(fill="x", padx=12, pady=(8, 6))
         ctk.CTkLabel(head, text="●", text_color=accent, font=fonts["dot"], height=0).pack(side="left")
         ctk.CTkLabel(head, text=title, text_color=C["text"], font=fonts["title"], height=0).pack(side="left", padx=(6, 0))
@@ -165,11 +170,19 @@ class ImagePanel(ctk.CTkFrame):
             ctk.CTkLabel(head, text=hint, text_color=C["faint"], font=fonts["hint"], height=0).pack(side="left", padx=(6, 0))
         self.zoom_hint = ctk.CTkLabel(head, text="", text_color=C["faint"], font=fonts["hint"], height=0)
         self.zoom_hint.pack(side="right")
-        self.view = ctk.CTkLabel(self, text="", image=self._blank, width=size[0], height=size[1],
+        body = ctk.CTkFrame(self, fg_color="transparent", width=full[0], height=full[1])
+        body.pack(padx=8, pady=(0, 8))
+        body.pack_propagate(False)                                   # long text never makes the card taller
+        self.view = ctk.CTkLabel(body, text="", image=self._blank, width=size[0], height=size[1],
                                  fg_color=C["card"], text_color=C["faint"], font=fonts["hint"], corner_radius=0)
-        self.view.pack(padx=8, pady=(0, 8))
-        for w in (self, head, self.view, self.zoom_hint):                # the whole card is the touch target
-            w.bind("<Button-1>", self._tapped)
+        self.view.pack(side="left")
+        self.text = None
+        if text_width:
+            self.text = ctk.CTkLabel(body, text="", text_color=C["text"], font=fonts["text"], justify="left",
+                                     anchor="nw", wraplength=text_width - 10)
+            self.text.pack(side="left", fill="both", expand=True, padx=(10, 0))
+        for w in (self, head, body, self.view, self.zoom_hint, *([self.text] if self.text else [])):
+            w.bind("<Button-1>", self._tapped)                       # the whole card is the touch target
 
     def _tapped(self, _event=None) -> None:
         if self.source is not None and self.on_tap:
@@ -181,6 +194,10 @@ class ImagePanel(ctk.CTkFrame):
         fitted = ImageOps.pad(img.convert("RGB"), self.size, Image.LANCZOS, color=(0, 0, 0))   # sharpest downscale
         out.paste(fitted, (0, 0), self._mask)
         return out
+
+    def say(self, text: str) -> None:
+        if self.text is not None:
+            self.text.configure(text=text if len(text) <= 260 else text[:250].rsplit(" ", 1)[0] + "… (tap for more)")
 
     def show(self, img: Image.Image | None, empty_text: str = "No image") -> None:
         self.source = img
@@ -195,9 +212,10 @@ class ImagePanel(ctk.CTkFrame):
 
 class ZoomView(ctk.CTkFrame):
     """Full-size view of one image over the top of the screen; tap anywhere on it to close.
-    It stops above the Start/Stop/Reset row, so Stop is always reachable."""
+    It stops above the Start/Stop/Reset row, so Stop is always reachable.
+    With `text`, the image takes the left side and the text (the heatmap explanation) the right."""
 
-    def __init__(self, master, img: Image.Image, title: str, size: tuple[int, int], fonts):
+    def __init__(self, master, img: Image.Image, title: str, size: tuple[int, int], fonts, text: str | None = None):
         super().__init__(master, fg_color=C["well"], corner_radius=0, width=size[0], height=size[1])
         self.pack_propagate(False)                     # keep the given size whatever the image is
         head = ctk.CTkFrame(self, fg_color="transparent")
@@ -205,13 +223,23 @@ class ZoomView(ctk.CTkFrame):
         ctk.CTkLabel(head, text=title, text_color="#FFFFFF", font=fonts["title"], height=0).pack(side="left")
         ctk.CTkLabel(head, text="Tap to close", text_color=C["faint"], font=fonts["hint"], height=0).pack(side="right")
         head.update_idletasks()
-        box = (size[0] - 16, max(1, size[1] - head.winfo_reqheight() - 20))
+        text_w = int(size[0] * 0.48) if text is not None else 0
+        box = (size[0] - 16 - text_w, max(1, size[1] - head.winfo_reqheight() - 20))
         fitted = ImageOps.contain(img.convert("RGB"), box, Image.LANCZOS)
         self._img = ctk.CTkImage(fitted, size=fitted.size)
         view = ctk.CTkLabel(self, text="", image=self._img, fg_color=C["well"])
-        view.pack(expand=True)
-        for w in (self, head, view, *head.winfo_children()):
+        view.pack(side="left" if text is not None else "top", expand=True)
+        self.text = None
+        if text is not None:
+            self.text = ctk.CTkLabel(self, text=text, text_color="#E5E7EB", font=fonts["hint"], justify="left",
+                                     anchor="nw", wraplength=text_w - 24, fg_color=C["well"])
+            self.text.pack(side="right", fill="both", expand=True, padx=(4, 16), pady=(4, 8))
+        for w in (self, head, view, *head.winfo_children(), *([self.text] if self.text else [])):
             w.bind("<Button-1>", lambda e: self.destroy())
+
+    def set_text(self, text: str) -> None:
+        if self.text is not None and self.winfo_exists():
+            self.text.configure(text=text)
 
 
 class TrayStrip(ctk.CTkCanvas):
@@ -370,6 +398,12 @@ class App(ctk.CTk):
         self._confirm_job: str | None = None
         self._uvc_elapsed = 0
         self._live = False
+        self._shown: EggResult | None = None           # the result on screen (its heatmap can be explained)
+        self.explainer = Explainer(cfg.explain_model, cfg.explain_url)
+        self._slm_busy = False
+        self._too_bright = False
+        self._threshold = cfg.detect_threshold or VALIDATED_THRESHOLD
+        threading.Thread(target=self.explainer.warm, daemon=True).start()
         self._live_run = 0                             # bumps each time Live turns on
         self.title("Duck Egg Inspector")
         self._setup_window()
@@ -477,23 +511,105 @@ class App(ctk.CTk):
         size = (inner, height)
         row = self._row(self)
         row.pack(fill="x", padx=pad, pady=(0, pad))
-        fonts = {"dot": self._f(7, True), "title": self._f(9, True), "hint": self._f(8)}
-        specs = [("Optical", "transilluminated", "optical", C["amber"]),
-                 ("XGrad-CAM", "Mask R-CNN heatmap", "heat", C["uv"])]
+        fonts = {"dot": self._f(7, True), "title": self._f(9, True), "hint": self._f(8), "text": self._f(8)}
+        text_w = size[0] - int(height * 1.45)          # the egg photo is ~4:3; the rest of the heatmap card is text
+        specs = [("Optical", "transilluminated", "optical", C["amber"], 0),
+                 ("XGrad-CAM", "heatmap + what it means", "heat", C["uv"], text_w)]
         self.panels = {}
-        for col, (title, hint, key, accent) in enumerate(specs):
-            panel = ImagePanel(row, title, hint, accent, size, fonts, self._px(10), self._px(16), self._zoom)
+        for col, (title, hint, key, accent, tw) in enumerate(specs):
+            panel = ImagePanel(row, title, hint, accent, size, fonts, self._px(10), self._px(16), self._zoom, tw)
             panel.grid(row=0, column=col, padx=(0 if col == 0 else gap // 2, 0 if col == len(specs) - 1 else gap // 2))
             self.panels[key] = panel
         row.columnconfigure(tuple(range(len(specs))), weight=1, uniform="img")
         self._zoom_fonts = {"title": self._f(11, True), "hint": self._f(9)}
+        if hasattr(self.backend, "set_exposure"):                    # webcam: exposure for candling
+            self._build_light(self.panels["optical"])
         self._zoomed: ZoomView | None = None
+
+    def _build_light(self, panel: ImagePanel) -> None:
+        """−/+ step the webcam exposure; Auto finds the brightest one that doesn't burn out a candled egg."""
+        panel.zoom_hint.pack_forget()                             # the image is still tappable; make room
+        bar = self._row(panel.head)
+        bar.pack(side="right")
+        small = dict(size=8, height=22)
+        for text, cmd in (("Auto", self._light_auto), ("+", lambda: self._light_step(1))):
+            b = self._button(bar, text, cmd, **small)
+            b.configure(width=self._px(40 if text == "Auto" else 24), corner_radius=self._px(8))
+            self._style(b, "secondary", True)
+            b.pack(side="right", padx=(self._px(3), 0))
+        self.light_val = self._label(bar, "", 8, True, C["muted"])
+        self.light_val.pack(side="right", padx=self._px(3))
+        b = self._button(bar, "−", lambda: self._light_step(-1), **small)
+        b.configure(width=self._px(24), corner_radius=self._px(8))
+        self._style(b, "secondary", True)
+        b.pack(side="right")
+        self._show_light()
+
+    def _show_light(self) -> None:
+        e = self.backend.exposure
+        self.light_val.configure(text="☀ auto" if e is None else f"☀ {e + 1}/{self.backend.steps}")
+
+    def _light_step(self, delta: int) -> None:
+        e = self.backend.exposure
+        self.backend.set_exposure(self.backend.steps // 2 if e is None else e + delta)
+        self._show_light()
+        self.after(400, self._check_light)               # the reader thread applies it between frames
+
+    def _check_light(self) -> None:
+        self._show_light()                               # the step count changes if it fell back to brightness
+        if self.backend.mode == "none":
+            self.backend.set_exposure(None)
+            self._ev_light(None)
+
+    def _light_auto(self) -> None:
+        self.light_val.configure(text="☀ …")
+        self._set_message("Setting the light: hold a candled egg in front of the camera…", C["uv"])
+        threading.Thread(target=lambda: self.events.put(Event("light", self.backend.auto_light())),
+                         daemon=True).start()
+
+    def _ev_light(self, step: int | None) -> None:
+        self._show_light()
+        if step is None:
+            self._set_message("This webcam doesn't let the app change its light. Dim or diffuse the candling "
+                              "light, and fill the picture with the egg.", C["amber"])
+        elif self.backend.mode == "brightness":
+            self._set_message(f"This webcam can't change its exposure, so brightness was turned down "
+                              f"({step + 1}/{self.backend.steps}). If the egg still glows white, dim or diffuse "
+                              "the candling light.", C["amber"])
+        else:
+            self._set_message(f"Light set to {step + 1}/{self.backend.steps}: the brightest exposure that keeps the "
+                              "egg's detail. Use − / + to fine-tune.", C["green"])
 
     def _zoom(self, img: Image.Image, title: str) -> None:
         self._close_zoom()
         height = self.btns["start"].master.winfo_y() - self._px(6)      # keep Start/Stop/Reset visible
-        self._zoomed = ZoomView(self, img, title, (self.W, height), self._zoom_fonts)
+        r = self._shown if img is self.panels["heat"].source else None  # the heatmap comes with its explanation
+        self._zoomed = ZoomView(self, img, title, (self.W, height), self._zoom_fonts,
+                                self._full_text(r) if r is not None else None)
         self._zoomed.place(x=0, y=0)
+
+    def _full_text(self, r: EggResult) -> str:
+        score = r.confidence if r.defective else 1 - r.confidence
+        text = r.explanation or interpret(r.defective, score, self._threshold, r.facts)
+        if not r.facts:
+            return text
+        facts = "\n".join(f"•  {line}" for line in fact_lines(r.facts))
+        return f"{text}\n\nMeasured from the heatmap:\n{facts}\n\n{r.explained_by or 'local SLM: writing…'}"
+
+    def _explain(self, r: EggResult) -> None:
+        """Worker thread: the SLM words the heatmap measurements (a few seconds; longer on a Pi)."""
+        try:
+            text, source = self.explainer.explain(r.facts)
+        finally:
+            self._slm_busy = False
+        self.events.put(Event("explained", (r, text, source)))
+
+    def _ev_explained(self, data: tuple[EggResult, str, str]) -> None:
+        r, r.explanation, r.explained_by = data
+        if self._shown is r:
+            self.panels["heat"].say(r.explanation)
+            if self._zoomed is not None and self._zoomed.winfo_exists():
+                self._zoomed.set_text(self._full_text(r))
 
     def _close_zoom(self) -> None:
         if self._zoomed is not None and self._zoomed.winfo_exists():
@@ -623,6 +739,8 @@ class App(ctk.CTk):
         self.tray.reset()
         self.panels["optical"].show(None, "No image yet")
         self.panels["heat"].show(None, "No image yet")
+        self.panels["heat"].say("After an inspection, this explains the result in plain words.")
+        self._shown = None
         self._set_verdict("idle")
         self.detail.configure(text="Press Start to inspect the tray")
         self.egg_tag.configure(text="")
@@ -659,10 +777,18 @@ class App(ctk.CTk):
         self._show_result(self.results[i], f"Egg {i + 1} of {self.cfg.egg_count}")
 
     def _show_result(self, r: EggResult, tag: str) -> None:
-        self.panels["heat"].show(r.heatmap, "No defect, no heatmap")
+        self._shown = r
+        self.panels["heat"].show(r.heatmap, "No crack, no heatmap")
+        score = r.confidence if r.defective else 1 - r.confidence
+        self.panels["heat"].say(r.explanation or interpret(r.defective, score, self._threshold, r.facts))
+        if r.defective and r.facts and not r.explanation and not self._slm_busy:
+            self._slm_busy = True                      # one SLM job at a time; Live frames meanwhile keep the fixed text
+            threading.Thread(target=self._explain, args=(r,), daemon=True).start()
         bad = r.defective
         self._set_verdict("bad" if bad else "ok")
-        if r.source:                                   # photo test mode: no spin, show which file it was
+        if bad and r.facts:                            # the heatmap in a few words; tap it for the full explanation
+            what = f"Micro-fissure  ·  {summary(r.facts)}"
+        elif r.source:                                 # photo test mode: no spin, show which file it was
             what = f"{'Micro-fissure' if bad else 'No micro-fissure'}  ·  {r.source}"
         else:
             what = f"Micro-fissure at {r.angle_deg:.0f}°  ·  {r.views} views" if bad else f"No micro-fissure  ·  {r.views} views"
@@ -761,6 +887,11 @@ class App(ctk.CTk):
             if frame is None:
                 time.sleep(0.05)
                 continue
+            white = burnt(frame)
+            if white > OVEREXPOSED:                       # don't judge a white blob; wait for a usable picture
+                self.events.put(Event("live_bright", (run, white)))
+                time.sleep(0.5)
+                continue
             t0 = time.perf_counter()
             try:
                 view = self.backend.model.predict(frame)
@@ -768,13 +899,32 @@ class App(ctk.CTk):
                 self.events.put(Event("live_error", f"{type(exc).__name__}: {exc}"))
                 return
             conf = view.score if view.cracked else 1 - view.score
-            r = EggResult(-1, view.cracked, conf, frame, view.heatmap, (time.perf_counter() - t0) * 1000, source="live")
+            r = EggResult(-1, view.cracked, conf, frame, view.heatmap, (time.perf_counter() - t0) * 1000,
+                          source="live", facts=view.facts)
             self.events.put(Event("live", (run, r)))
 
     def _ev_live(self, data: tuple[int, EggResult]) -> None:
         run, r = data
-        if self._live_on(run):                             # drop a result from a Live session that has ended
-            self._show_result(r, "Live")
+        if not self._live_on(run):                         # drop a result from a Live session that has ended
+            return
+        self._show_result(r, "Live")
+        self._set_message("Live test: hold an egg in front of the camera. Tap Live again to stop.", C["uv"])
+
+    def _ev_live_bright(self, data: tuple[int, float]) -> None:
+        run, white = data
+        if not self._live_on(run):
+            return
+        self._shown = None
+        self._set_verdict("idle")
+        self.detail.configure(text="Too bright to judge: waiting for a usable picture")
+        self.egg_tag.configure(text="Live")
+        self.conf_val.configure(text="–")
+        self._set_bar(self.conf_bar, 0, C["track"])
+        self.panels["heat"].show(None, "Waiting")
+        self.panels["heat"].say("The picture is too bright: a burnt-white egg hides any crack, so the model "
+                                "waits instead of guessing.")
+        self._set_message(f"Too bright: {white:.0%} of the picture is burnt white. Tap Auto (Light), or dim / "
+                          "diffuse the candling light.", C["amber"])
 
     def _ev_live_error(self, msg: str) -> None:
         self._set_live(False)
@@ -791,6 +941,17 @@ class App(ctk.CTk):
         self.after(40, self._poll)
 
     def _ev_status(self, text: str) -> None:
+        if text.startswith(TOO_BRIGHT):                  # webcam waiting for a usable picture: make it obvious
+            self._too_bright = True
+            self.status.configure(text="Waiting: too bright")
+            self._set_message(text, C["amber"])
+            frame = self.backend.live_frame()            # show the camera so the light can be adjusted while waiting
+            if frame is not None:
+                self.panels["optical"].show(frame)
+            return
+        if self._too_bright:                             # usable again: clear the warning
+            self._too_bright = False
+            self._set_message("")
         self.status.configure(text=text)
 
     def _ev_egg(self, r: EggResult) -> None:

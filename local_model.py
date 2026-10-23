@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from .explain import cam_facts
 from .model_client import MAX_SIDE, ViewScore
 
 VALIDATED_THRESHOLD = 0.83          # the threshold the model team validated (same default as the API)
@@ -100,9 +101,14 @@ class LocalCrackModel:
             if not cracked:
                 return ViewScore(score, False, None)
             images, _ = self.net.transform([x])           # resized + padded size, as the detector saw it
-            return ViewScore(score, True, self._overlay(saved["act"], images, image))
+            heatmap, cam = self._overlay(saved["act"], images, image)
+            w, h = image.size
+            box = [float(v) for v in out["boxes"][best].detach()]   # in the photo's pixels
+            facts = cam_facts(cam, (box[0] / w, box[1] / h, box[2] / w, box[3] / h), score, self.threshold)
+            return ViewScore(score, True, heatmap, facts)
 
-    def _overlay(self, act_leaf, images, image: Image.Image) -> Image.Image:
+    def _overlay(self, act_leaf, images, image: Image.Image) -> tuple[Image.Image, np.ndarray]:
+        """The heatmap over the photo, and the raw heatmap (0..1, feature-map size) for measuring."""
         torch = self.torch
         act, grad = act_leaf[0].detach(), act_leaf.grad[0]
         weights = (act * grad).sum((1, 2)) / (act.sum((1, 2)) + 1e-7)
@@ -111,10 +117,11 @@ class LocalCrackModel:
         (h, w), (ph, pw) = images.image_sizes[0], images.tensors.shape[-2:]
         cam = cam[: max(1, round(cam.shape[0] * h / ph)), : max(1, round(cam.shape[1] * w / pw))]
         cam = cam / cam.max() if cam.max() > 0 else cam
+        small = cam
         cam = np.asarray(Image.fromarray((cam * 255).astype(np.uint8)).resize(image.size, Image.BILINEAR)) / 255.0
         alpha = (0.55 * cam)[..., None]
         blend = np.asarray(image, np.float32) * (1 - alpha) + _jet(cam).astype(np.float32) * alpha
-        return Image.fromarray(blend.astype(np.uint8))
+        return Image.fromarray(blend.astype(np.uint8)), small
 
     def close(self) -> None:
         pass

@@ -17,6 +17,9 @@ class EggResult:
     views: int = 1                  # how many angles were captured during the 360 deg spin
     angle_deg: float = 0.0          # spin angle of the view shown above
     source: str = ""                # photo file name (image test mode only)
+    facts: dict | None = None       # heatmap measurements (explain.cam_facts); None without the local model
+    explanation: str = ""           # plain-language interpretation shown next to the heatmap
+    explained_by: str = ""          # who wrote it: the local SLM, or the fixed wording and why
 
 
 @dataclass

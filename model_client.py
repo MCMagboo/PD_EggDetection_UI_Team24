@@ -36,6 +36,7 @@ class ViewScore:
     score: float                            # max crack score for this view, 0..1
     cracked: bool                           # score >= threshold
     heatmap: Image.Image | None             # XGrad-CAM overlay; None when not cracked (or CAM failed)
+    facts: dict | None = None               # heatmap measurements for the explanation (local model only)
 
 
 def _base_url(value: str) -> str:
