@@ -15,7 +15,7 @@ def main() -> None:
                          "images = photos from --images through the real model API (no hardware); "
                          "webcam = USB webcam --camera through the real model, with a Live button (no hardware)")
     ap.add_argument("--model", choices=["local", "api"], default=None,
-                    help="crack model: local = model_best.pth on this machine (default), api = the Modal model API")
+                    help="crack model: local = model_best_quantized.pth on this machine (default), api = the Modal model API")
     ap.add_argument("--camera", default="0", help="with --backend webcam: index (0 = first) or path, e.g. /dev/video8")
     ap.add_argument("--images", help="with --backend images: folder of egg photos (.jpg/.png), one per tray slot")
     ap.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen (for development)")

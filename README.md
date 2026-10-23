@@ -25,7 +25,7 @@ GPIO or model.
 | `--backend mock\|pi\|images\|webcam` | `mock` = fake data (default); `pi` = real camera, GPIO, UV-C relay and the model; `images` = your photos through the real model, no hardware; `webcam` = USB webcam with a Live test button |
 | `--images DIR` | With `--backend images`: folder of egg photos, one per tray slot |
 | `--camera 0` | With `--backend webcam`: webcam index or path, e.g. `/dev/video8` |
-| `--model local\|api` | Crack model: `local` = `model_best.pth` on this machine (default); `api` = the Modal model API |
+| `--model local\|api` | Crack model: `local` = `model_best_quantized.pth` on this machine (default); `api` = the Modal model API |
 | `--no-model` | With `--backend pi`: real camera, motors, LEDs, buzzer and UV-C; crack verdicts simulated (no network needed) |
 | `--fake-vision` | With `--backend pi`: like `--no-model` but with drawn eggs instead of the camera |
 | `--windowed` | Run in a window instead of fullscreen |
@@ -140,7 +140,7 @@ reject and UV-C paths run. The header shows **"Simulated results: no model loade
 - Use `--fake-vision` instead of `--no-model` to also replace the camera with drawn eggs, e.g. while the camera
   is unplugged.
 - Without either flag, the app runs the trained model on every view (see *The crack-detection model*). It
-  stops with a message if `model_best.pth` or PyTorch is missing.
+  stops with a message if `model_best_quantized.pth` or PyTorch is missing.
 - **No camera found:** the app stops with a message. Power off, check the ribbon cable, then run
   `rpicam-hello --list-cameras`.
 - **Tray faults:** the app shows a fault if the home or slot sensor never triggers. Check them with the
@@ -151,22 +151,18 @@ reject and UV-C paths run. The header shows **"Simulated results: no model loade
 Needs **64-bit** Raspberry Pi OS (PyTorch has no 32-bit build): `uname -m` must print `aarch64`.
 Commands are Pi bash unless marked PowerShell.
 
-1. **Get the code.** The folder must be named `egg_inspector`, because the icon runs the app from there:
+1. **Get the code and the model.** The model (`model_best_quantized.pth`, 88 MB) is in the repository, so this brings it
+   too. The folder must be named `egg_inspector`, because the icon runs the app from there:
    ```bash
    git clone https://github.com/MCMagboo/PD_EggDetection_UI_Team24.git ~/egg_inspector   # first time
    cd ~/egg_inspector && git pull                                                          # later updates
    ```
-2. **Copy the model weights.** `model_best.pth` (176 MB) isn't in GitHub. From the PC (PowerShell), or use a
-   USB stick:
-   ```powershell
-   scp "C:\path\to\model_best.pth" <user>@<pi-ip>:~/egg_inspector/
-   ```
-3. **Install the packages, PyTorch included.** The download is large and takes a while:
+2. **Install the packages, PyTorch included.** The download is large and takes a while:
    ```bash
    python3 -m venv --system-site-packages ~/egg-venv      # skip if it already exists
    ~/egg-venv/bin/pip install -r ~/egg_inspector/deploy/requirements.txt
    ```
-4. **Time the model on the Pi.** Take a photo with the test menu's **Camera: test photo**, then:
+3. **Time the model on the Pi.** Take a photo with the test menu's **Camera: test photo**, then:
    ```bash
    cd ~
    ~/egg-venv/bin/python -m egg_inspector.model_client ~/egg_camera_test.jpg --heatmap heat.png
@@ -174,20 +170,20 @@ Commands are Pi bash unless marked PowerShell.
    It prints the verdict and the seconds taken. Each egg takes about `frames_per_egg` × that time. If it's too
    slow, lower `frames_per_egg` in `config.py`, or use the model API (`--model api`, see *The crack-detection
    model*).
-5. **Check the wiring settings before connecting the UV-C lamp:** `PINS` and `ACTIVE_HIGH` in `config.py` must
+4. **Check the wiring settings before connecting the UV-C lamp:** `PINS` and `ACTIVE_HIGH` in `config.py` must
    match the schematic and relay boards (see *Testing the hardware on the Pi*). Also calibrate `spin_seconds`.
-6. **Run one full tray from the terminal:**
+5. **Run one full tray from the terminal:**
    ```bash
    cd ~
    ~/egg-venv/bin/python -m egg_inspector --backend pi
    ```
-7. **Install the desktop app** once step 6 works:
+6. **Install the desktop app** once step 5 works:
    ```bash
    cd ~/egg_inspector
    bash deploy/install.sh --backend pi          # add --autostart to open it at login (kiosk)
    ```
    Then double-tap **Egg Inspector** on the desktop (also in Menu > Accessories). The installer makes its own
-   venv at `~/.local/share/egg_inspector/venv` and warns if `model_best.pth` is missing.
+   venv at `~/.local/share/egg_inspector/venv` and warns if `model_best_quantized.pth` is missing.
 
 Re-run the installer to change options:
 
@@ -195,7 +191,7 @@ Re-run the installer to change options:
 |---|---|
 | *(none)* | Mock backend; works before the model and hardware are ready |
 | `--backend webcam` | USB webcam + Live test, real model, no motors. Finds the webcam itself, or add `--camera /dev/videoN` |
-| `--backend pi` | The station: real hardware + the trained model (needs `model_best.pth` + PyTorch, see *The crack-detection model*) |
+| `--backend pi` | The station: real hardware + the trained model (needs `model_best_quantized.pth` + PyTorch, see *The crack-detection model*) |
 | `--autostart` | Open the app automatically at login (kiosk mode) |
 | `--no-apt` | Skip `apt-get` (offline or already installed) |
 | `--uninstall` | Remove icons, autostart entry and venv; keeps the source folder |
@@ -260,7 +256,8 @@ Safety rules in software:
 | `mock_backend.py` | Fake images for development without hardware |
 | `image_backend.py` | `--backend images` (photo folder) and `--backend webcam` (USB webcam, Live test): the real model, no hardware |
 | `pi_backend.py` | Real camera, GPIO, UV-C relay; sends views to the model. Also `NoModelPiBackend` (real camera + hardware, simulated verdicts) and `FakeVisionPiBackend` (no camera) |
-| `local_model.py` | Runs `model_best.pth` (Mask R-CNN + XGrad-CAM) on this machine; the default |
+| `local_model.py` | Runs `model_best_quantized.pth` (Mask R-CNN + XGrad-CAM) on this machine; the default |
+| `model_best_quantized.pth` | The trained model weights (88 MB, half precision), used by the local model |
 | `model_client.py` | Client for the model API, `load_model()` (picks local or API), and a one-photo command-line check |
 | `api_contract.py` | The API's response format, copied unchanged from the model team's client |
 | `datatypes.py` | `EggResult`, `Summary`, `UvcOutcome`, `Event` |
@@ -370,19 +367,25 @@ The model is **Mask R-CNN (ResNet-50 FPN) + XGrad-CAM**, trained by the model te
 | | `local` (default) | `api` |
 |---|---|---|
 | Where it runs | On this machine (Pi or PC), CPU | Model team's Modal GPU server |
-| Needs | `model_best.pth` in the `egg_inspector` folder + PyTorch | Internet + Modal token pair |
+| Needs | `model_best_quantized.pth` (in the repository) + PyTorch | Internet + Modal token pair |
 | Speed per view (laptop) | ~4 s, ~7 s when a crack is found (heatmap) | ~3 s warm; 15 s to minutes when the server is cold |
 | Code | `local_model.py` | `model_client.py` (replies checked against `api_contract.py`) |
 
-`model_best.pth` is the same checkpoint the API serves (epoch 14, SHA-256 `f3e4c058…c8b9c`). Each view gives:
+`model_best_quantized.pth` is the checkpoint the API serves (`model_best.pth`, epoch 14, SHA-256 `f3e4c058…c8b9c`), stored
+with 16-bit numbers. Each view gives:
 
 - the crack decision and the max crack score (cracked if it is at or above the threshold, 0.83 by default),
 - an XGrad-CAM overlay on `backbone.body.layer4[-1]` when a crack is found. This is shown in the XGrad-CAM panel.
 
 ### Local model (default)
 
-`model_best.pth` is 176 MB, so it isn't in GitHub (`.gitignore` blocks `*.pth`). Get it from the model team and
-put it in the `egg_inspector` folder next to `config.py`. Then install PyTorch.
+The weights come with the repository: `model_best_quantized.pth` (88 MB). It is `model_best.pth` with every number stored
+as a 16-bit float instead of 32-bit, so half the size. On the dataset photos it gives the same verdicts as the
+full file, with scores within 0.001. Only PyTorch needs installing.
+
+The full `model_best.pth` (176 MB) is too big for GitHub (the limit is 100 MB per file), so `.gitignore` keeps it
+out. To use it locally, put it next to `config.py` and set `model_path = "model_best.pth"`. Keep later model
+updates rare: every new version of the weights adds another 88 MB to the repository's history.
 
 On the Pi (bash):
 

@@ -1,4 +1,4 @@
-"""Run the trained Mask R-CNN (model_best.pth) on this machine instead of calling the model API.
+"""Run the trained Mask R-CNN (model_best_quantized.pth, or model_best.pth) on this machine instead of calling the model API.
 
 Same interface as model_client.CrackModel: predict(image) -> ViewScore, close().
 
@@ -6,6 +6,7 @@ The checkpoint is torchvision's maskrcnn_resnet50_fpn with 2 classes (background
 {"model": state_dict, "epoch", "validation_ap", "config_sha256"}. Its mask head layers are named
 deconv / mask_logits instead of torchvision's conv5_mask / mask_fcn_logits; the shapes are identical,
 so they are renamed on load. The file is opened with weights_only=True: tensors only, no code runs.
+The quantized file stores the same weights as 16-bit floats; load_state_dict turns them back into 32-bit.
 
 XGrad-CAM (only for views with a crack): gradients of the top crack score w.r.t. the last ResNet block
 (backbone.body.layer4[-1], the layer the API uses), channel weights sum(A * dY/dA) / sum(A), ReLU,

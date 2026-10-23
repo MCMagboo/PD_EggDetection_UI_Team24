@@ -117,8 +117,8 @@ else
     rm -f "$AUTOSTART_FILE"
 fi
 
-if [ "$BACKEND" != mock ] && [ ! -f "$PKG_DIR/model_best.pth" ]; then
-    say "Model weights missing: copy model_best.pth into $PKG_DIR (see README)"
+if [ "$BACKEND" != mock ] && [ ! -f "$PKG_DIR/model_best_quantized.pth" ]; then
+    say "Model weights missing: $PKG_DIR/model_best_quantized.pth (it comes with git pull; see README)"
 fi
 
 say "Done. Double-tap 'Egg Inspector' on the desktop (also in Menu > Accessories)."

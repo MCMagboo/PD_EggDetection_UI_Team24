@@ -9,6 +9,7 @@ egg-venv/
 
 # Model weights and captures (large; share via Drive/Releases instead)
 *.pth
+!model_best_quantized.pth
 *.pt
 *.onnx
 egg_camera_test.jpg

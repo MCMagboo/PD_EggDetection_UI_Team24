@@ -155,7 +155,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Score one photo with the crack model and print the verdict")
     ap.add_argument("image")
     ap.add_argument("--model", choices=["local", "api"], default=Config.model_source,
-                    help="local = model_best.pth on this machine (default); api = the Modal model API")
+                    help="local = model_best_quantized.pth on this machine (default); api = the Modal model API")
     ap.add_argument("--heatmap", help="save the XGrad-CAM overlay here (only produced for cracks)")
     args = ap.parse_args()
     if not os.path.isfile(args.image):

@@ -10,8 +10,9 @@ class Config:
     uvc_seconds: int = 30             # UV-C exposure per run (Figure 2-11)
     auto_uvc: bool = True             # start UV-C automatically when cracked eggs are found (operator can toggle)
     detect_threshold: float | None = None   # crack score cut-off; None = the model's validated threshold (0.83)
-    model_source: str = "local"       # "local" = model_best.pth on this machine; "api" = the Modal model API
-    model_path: str = "model_best.pth"  # local weights; relative paths are inside the egg_inspector folder
+    model_source: str = "local"       # "local" = the weights file below, on this machine; "api" = the Modal model API
+    model_path: str = "model_best_quantized.pth"  # half-precision copy of model_best.pth (in git, same verdicts);
+                                                  # relative paths are inside the egg_inspector folder
     model_api_url: str = "https://qeresanjuan-capstone-maskrcnn--capstone-maskrcnn-api-cra-86a8eb.us-east.modal.run"
     model_parallel: int = 4           # views sent to the model API at once (overlaps upload with the spin);
                                       # the local model runs one view at a time while the egg keeps spinning
