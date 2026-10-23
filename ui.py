@@ -13,6 +13,7 @@ from __future__ import annotations
 import queue
 import subprocess
 import sys
+import threading
 import time
 import tkinter.font as tkfont
 from functools import lru_cache
@@ -24,7 +25,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageTk
 from .backend_base import Backend
 from .config import Config
 from .controller import InspectionController
-from .datatypes import EggResult, Summary, UvcOutcome
+from .datatypes import EggResult, Event, Summary, UvcOutcome
 
 C = {
     "bg": "#EEF2F7", "card": "#FFFFFF", "subtle": "#F3F6FA", "line": "#E3E8EF", "track": "#E3E8EF",
@@ -39,6 +40,7 @@ BUTTONS = {                               # kind -> (fill, text colour)
 }
 TRAY_COLORS = {"ok": C["green"], "bad": C["red"]}
 VERDICTS = {"idle": ("Waiting", C["faint"]), "ok": ("Accepted", C["green"]), "bad": ("Rejected", C["red"])}
+LIVE_FEED_MS = 80                         # live camera refresh (~12 fps)
 UVC_CONFIRM_MS = 3000                     # second tap must land within this window
 SS = 3                                    # supersampling factor for Pillow-drawn shapes
 TK_FAMILIES = ("Inter", "Segoe UI", "DejaVu Sans")      # first one installed wins
@@ -338,19 +340,24 @@ class Toggle(ctk.CTkCanvas):
         self.create_image(0, 0, anchor="nw", image=self._photo)
 
 
+def pixel_exact() -> None:
+    """Call before creating the window: 1 widget px = 1 screen px, so the layout math holds."""
+    ctk.deactivate_automatic_dpi_awareness()
+    if sys.platform == "win32":                    # ...but still tell Windows we draw our own pixels, or a laptop at
+        try:                                       # 125 %/150 % stretches the whole window as a bitmap (blurry);
+            import ctypes                          # the Pi is unaffected
+
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except (AttributeError, OSError):
+            pass
+    ctk.set_appearance_mode("light")
+
+
 # ---------------------------------------------------------------------- app
 class App(ctk.CTk):
     def __init__(self, cfg: Config, backend: Backend):
         global _family
-        ctk.deactivate_automatic_dpi_awareness()      # 1 widget px = 1 screen px, so the layout math holds
-        if sys.platform == "win32":                    # ...but still tell Windows we draw our own pixels, or a laptop at
-            try:                                       # 125 %/150 % stretches the whole window as a bitmap (blurry);
-                import ctypes                          # the Pi is unaffected
-
-                ctypes.windll.shcore.SetProcessDpiAwareness(2)
-            except (AttributeError, OSError):
-                pass
-        ctk.set_appearance_mode("light")
+        pixel_exact()
         super().__init__(fg_color=C["bg"])
         installed = set(tkfont.families(self))
         _family = next((f for f in TK_FAMILIES if f in installed), "TkDefaultFont")
@@ -362,6 +369,7 @@ class App(ctk.CTk):
         self._fonts: dict[tuple[int, bool], ctk.CTkFont] = {}
         self._confirm_job: str | None = None
         self._uvc_elapsed = 0
+        self._live = False
         self.title("Duck Egg Inspector")
         self._setup_window()
         self.s = self.H / 480                          # scale factor so 1024x600 etc. also fit
@@ -449,6 +457,11 @@ class App(ctk.CTk):
         self.exit_btn = self._button(bar, "Exit", self._quit, size=9, height=30)   # touchscreen has no Esc key
         self.exit_btn.configure(width=self._px(60), corner_radius=self._px(10))
         self.exit_btn.pack(side="right")
+        self.live_btn = None
+        if hasattr(self.backend, "live_frame"):                       # a camera the UI can watch (webcam backend)
+            self.live_btn = self._button(bar, "Live", self._toggle_live, size=9, height=30)
+            self.live_btn.configure(width=self._px(70), corner_radius=self._px(10))
+            self.live_btn.pack(side="right", padx=(0, self._px(8)))
         self.clock = self._label(bar, "", 13, True)
         self.clock.pack(side="right", padx=self._px(14))
         self.chip = self._chip(bar, 9)
@@ -596,6 +609,8 @@ class App(ctk.CTk):
         self._style(self.btns["reset"], "secondary", not running)
         self._style(self.uvc_btn, "uv", not running)
         self._style(self.exit_btn, "secondary", not running)
+        if self.live_btn:
+            self._style(self.live_btn, "uv" if self._live else "secondary", not running)
 
     def _set_verdict(self, state: str) -> None:
         word, color = VERDICTS[state]
@@ -638,9 +653,11 @@ class App(ctk.CTk):
             self._set_uvc(self._uvc_elapsed, o.status.capitalize(), C["amber"])
 
     def _show_egg(self, i: int) -> None:
-        r = self.results[i]
         self.tray.select(i)
-        self.panels["optical"].show(r.optical)
+        self.panels["optical"].show(self.results[i].optical)
+        self._show_result(self.results[i], f"Egg {i + 1} of {self.cfg.egg_count}")
+
+    def _show_result(self, r: EggResult, tag: str) -> None:
         self.panels["heat"].show(r.heatmap, "No defect, no heatmap")
         bad = r.defective
         self._set_verdict("bad" if bad else "ok")
@@ -649,12 +666,13 @@ class App(ctk.CTk):
         else:
             what = f"Micro-fissure at {r.angle_deg:.0f}°  ·  {r.views} views" if bad else f"No micro-fissure  ·  {r.views} views"
         self.detail.configure(text=f"{what}  ·  {r.latency_ms / 1000:.1f} s")
-        self.egg_tag.configure(text=f"Egg {i + 1} of {self.cfg.egg_count}")
+        self.egg_tag.configure(text=tag)
         self.conf_val.configure(text=f"{r.confidence * 100:.1f}%")
         self._set_bar(self.conf_bar, r.confidence, C["red"] if bad else C["green"])
 
     # --------------------------------------------------------------- buttons
     def _btn_start(self) -> None:
+        self._set_live(False)
         self._close_zoom()
         self._cancel_confirm()
         self._reset_view()
@@ -700,6 +718,60 @@ class App(ctk.CTk):
 
     def _toggle_auto(self) -> None:
         self.ctrl.auto_uvc = bool(self.auto_uvc.get())   # picked up when the current inspection ends
+
+    # ------------------------------------------------------------------ live
+    def _toggle_live(self) -> None:
+        if not self.ctrl.running:
+            self._set_live(not self._live)
+
+    def _set_live(self, on: bool) -> None:
+        """Live test: the Optical panel follows the camera and the model checks the newest frame non-stop."""
+        if on == self._live or not self.live_btn:
+            return
+        self._live = on
+        self.live_btn.configure(text="■  Live" if on else "Live")
+        self._set_running(self.ctrl.running)
+        if on:
+            self.tray.select(None)
+            self._set_chip("Live test", C["uv"])
+            self._set_message("Live test: hold an egg in front of the camera. Tap Live again to stop.", C["uv"])
+            threading.Thread(target=self._live_checks, daemon=True).start()
+            self._live_feed()
+        else:
+            self._set_chip("Ready", C["blue"])
+            self._set_message("")
+
+    def _live_feed(self) -> None:
+        if self._live:
+            frame = self.backend.live_frame()
+            if frame is not None:
+                self.panels["optical"].show(frame)
+            self.after(LIVE_FEED_MS, self._live_feed)
+
+    def _live_checks(self) -> None:
+        """Worker thread: check the newest frame, report it, repeat. Results go through the event queue."""
+        while self._live:
+            frame = self.backend.live_frame()
+            if frame is None:
+                time.sleep(0.05)
+                continue
+            t0 = time.perf_counter()
+            try:
+                view = self.backend.model.predict(frame)
+            except Exception as exc:                          # show it like any other failure, then stop
+                self.events.put(Event("live_error", f"{type(exc).__name__}: {exc}"))
+                return
+            conf = view.score if view.cracked else 1 - view.score
+            self.events.put(Event("live", EggResult(-1, view.cracked, conf, frame, view.heatmap,
+                                                    (time.perf_counter() - t0) * 1000, source="live")))
+
+    def _ev_live(self, r: EggResult) -> None:
+        if self._live:                                     # drop a result that lands after Live was switched off
+            self._show_result(r, "Live")
+
+    def _ev_live_error(self, msg: str) -> None:
+        self._set_live(False)
+        self._ev_error(msg)
 
     # ---------------------------------------------------------------- events
     def _poll(self) -> None:
@@ -767,6 +839,7 @@ class App(ctk.CTk):
         self.after(1000, self._tick_clock)
 
     def _quit(self) -> None:
+        self._live = False
         self.ctrl.stop()
         self.ctrl.join()
         self.backend.close()

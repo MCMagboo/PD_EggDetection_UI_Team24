@@ -22,8 +22,9 @@ GPIO or model.
 
 | Option | Meaning |
 |---|---|
-| `--backend mock\|pi\|images` | `mock` = fake data (default); `pi` = real camera, GPIO, UV-C relay and the model; `images` = your photos through the real model, no hardware |
+| `--backend mock\|pi\|images\|webcam` | `mock` = fake data (default); `pi` = real camera, GPIO, UV-C relay and the model; `images` = your photos through the real model, no hardware; `webcam` = USB webcam with a Live test button |
 | `--images DIR` | With `--backend images`: folder of egg photos, one per tray slot |
+| `--camera 0` | With `--backend webcam`: webcam index or path, e.g. `/dev/video8` |
 | `--model local\|api` | Crack model: `local` = `model_best.pth` on this machine (default); `api` = the Modal model API |
 | `--no-model` | With `--backend pi`: real camera, motors, LEDs, buzzer and UV-C; crack verdicts simulated (no network needed) |
 | `--fake-vision` | With `--backend pi`: like `--no-model` but with drawn eggs instead of the camera |
@@ -256,7 +257,7 @@ Safety rules in software:
 | `controller.py` | Background worker: inspection cycle, UV-C policy and safety checks |
 | `backend_base.py` | `Backend` interface that both backends implement |
 | `mock_backend.py` | Fake images for development without hardware |
-| `image_backend.py` | `--backend images`: photos from a folder through the real model API, no hardware |
+| `image_backend.py` | `--backend images` (photo folder) and `--backend webcam` (USB webcam, Live test): the real model, no hardware |
 | `pi_backend.py` | Real camera, GPIO, UV-C relay; sends views to the model. Also `NoModelPiBackend` (real camera + hardware, simulated verdicts) and `FakeVisionPiBackend` (no camera) |
 | `local_model.py` | Runs `model_best.pth` (Mask R-CNN + XGrad-CAM) on this machine; the default |
 | `model_client.py` | Client for the model API, `load_model()` (picks local or API), and a one-photo command-line check |
@@ -322,6 +323,32 @@ slow the motor or add a mechanical detent. A stepper on the centre shaft would a
 **Time per egg:** about `spin_seconds + frames_per_egg × (settle + capture + inference)`. With 8 views and a model
 that takes 1 s per image on the Pi, expect roughly 12–13 s per egg, or about 2 minutes per tray. Measure it on
 the Pi and lower `frames_per_egg` if that's too slow.
+
+## Testing with a USB webcam (Live test)
+
+`--backend webcam` runs the normal app with a USB webcam instead of the station camera, and no motors. LEDs,
+buzzer and UV-C are only logged.
+
+- **Live** (button next to Exit): the Optical panel follows the camera, and the model checks the newest frame
+  non-stop. The result card and the XGrad-CAM panel update after each check: about 5 s on a laptop, longer on
+  a Pi CPU. Tap **Live** again to stop.
+- **Start:** the normal tray cycle. Each slot takes the newest webcam frame, so swap the egg between slots.
+  Pressing Start switches Live off.
+
+On the Pi (bash), after the *Deploy on the Raspberry Pi* steps 1–3:
+
+```bash
+sudo apt install -y python3-opencv v4l-utils     # the installer does this too with --backend pi
+v4l2-ctl --list-devices                           # find the webcam's /dev/videoN
+cd ~
+~/egg-venv/bin/python -m egg_inspector --backend webcam --camera /dev/video0
+```
+
+Use the webcam's own path from `v4l2-ctl` (on a Pi 5 it isn't always `/dev/video0`). Add `--windowed` to run in
+a window, or `--model api` to use the model API.
+
+On a PC (PowerShell): `pip install opencv-python-headless`, then
+`python -m egg_inspector --backend webcam --camera 0 --windowed`.
 
 ## The crack-detection model
 

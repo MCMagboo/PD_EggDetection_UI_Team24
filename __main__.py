@@ -10,11 +10,13 @@ from .ui import App
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Duck egg inspection touchscreen app")
-    ap.add_argument("--backend", choices=["mock", "pi", "images"], default="mock",
+    ap.add_argument("--backend", choices=["mock", "pi", "images", "webcam"], default="mock",
                     help="mock = fake images (no model/hardware); pi = real camera/GPIO + model API; "
-                         "images = photos from --images through the real model API (no hardware)")
+                         "images = photos from --images through the real model API (no hardware); "
+                         "webcam = USB webcam --camera through the real model, with a Live button (no hardware)")
     ap.add_argument("--model", choices=["local", "api"], default=None,
                     help="crack model: local = model_best.pth on this machine (default), api = the Modal model API")
+    ap.add_argument("--camera", default="0", help="with --backend webcam: index (0 = first) or path, e.g. /dev/video8")
     ap.add_argument("--images", help="with --backend images: folder of egg photos (.jpg/.png), one per tray slot")
     ap.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen (for development)")
     ap.add_argument("--size", default="800x480", help="window size when --windowed, e.g. 1024x600")
@@ -43,6 +45,9 @@ def main() -> None:
         if args.backend == "mock":
             from .mock_backend import MockBackend
             backend = MockBackend(cfg, args.seed)
+        elif args.backend == "webcam":
+            from .image_backend import WebcamBackend
+            backend = WebcamBackend(cfg, args.camera)
         elif args.backend == "images":
             from .image_backend import ImageFolderBackend, find_photos
             photos = find_photos(args.images)

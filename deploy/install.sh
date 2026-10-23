@@ -59,7 +59,7 @@ chmod +x "$DEPLOY_DIR/run.sh"
 if [ "$APT" = 1 ]; then
     say "Installing system packages (needs sudo)"
     pkgs=(python3-venv python3-tk python3-pil python3-pil.imagetk python3-numpy fonts-dejavu-core zenity)
-    [ "$BACKEND" = pi ] && pkgs+=(python3-picamera2 python3-gpiozero)
+    [ "$BACKEND" = pi ] && pkgs+=(python3-picamera2 python3-gpiozero python3-opencv v4l-utils)
     sudo apt-get update
     sudo apt-get install -y "${pkgs[@]}"
     # UI font; optional, the app falls back to DejaVu Sans if it is unavailable.
