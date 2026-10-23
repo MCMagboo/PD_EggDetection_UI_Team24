@@ -157,27 +157,49 @@ Commands are Pi bash unless marked PowerShell.
    git clone https://github.com/MCMagboo/PD_EggDetection_UI_Team24.git ~/egg_inspector   # first time
    cd ~/egg_inspector && git pull                                                          # later updates
    ```
-2. **Install the packages, PyTorch included.** The download is large and takes a while:
+2. **Install the packages, PyTorch included.** The PyTorch download is large and takes a while:
    ```bash
+   sudo apt update
+   sudo apt install -y python3-venv python3-tk python3-pil.imagetk python3-numpy python3-opencv v4l-utils
    python3 -m venv --system-site-packages ~/egg-venv      # skip if it already exists
    ~/egg-venv/bin/pip install -r ~/egg_inspector/deploy/requirements.txt
    ```
-3. **Time the model on the Pi.** Take a photo with the test menu's **Camera: test photo**, then:
+3. **Time the model on the Pi.** Copy one cracked egg photo to the Pi, e.g. `IMG_2480.jpg` to `~/` (from the PC:
+   `scp "Duck egg dataset\Cracked\IMG_2480.jpg" <user>@<pi-ip>:~/`, or a USB stick), then:
    ```bash
    cd ~
-   ~/egg-venv/bin/python -m egg_inspector.model_client ~/egg_camera_test.jpg --heatmap heat.png
+   ~/egg-venv/bin/python -m egg_inspector.model_client ~/IMG_2480.jpg --heatmap heat.png
    ```
-   It prints the verdict and the seconds taken. Each egg takes about `frames_per_egg` × that time. If it's too
-   slow, lower `frames_per_egg` in `config.py`, or use the model API (`--model api`, see *The crack-detection
-   model*).
-4. **Check the wiring settings before connecting the UV-C lamp:** `PINS` and `ACTIVE_HIGH` in `config.py` must
+   It should print `CRACK  score 0.959  (… s, local model)`. The seconds are the Pi's time per photo; write them
+   in *Test results*. On the rig, each egg takes about `frames_per_egg` × that time. If that's too slow, lower
+   `frames_per_egg` in `config.py`, or use the model API (`--model api`, see *The crack-detection model*).
+4. **Live test with the USB webcam.** Plug the webcam in, find its path, and start the app:
+   ```bash
+   v4l2-ctl --list-devices                     # the webcam's block lists /dev/videoN; use the first one
+   cd ~
+   ~/egg-venv/bin/python -m egg_inspector --backend webcam --camera /dev/videoN
+   ```
+   The header must say **"Test mode: webcam …, local model"**. Tap **Live** next to Exit and hold an egg in front
+   of the webcam. The result card and the XGrad-CAM panel update after every check. Tap **Live** again to stop,
+   and **Exit** to close. See *Testing with a USB webcam* for more.
+5. **Desktop icon for the webcam test** (optional). The installer finds the USB webcam by itself:
+   ```bash
+   cd ~/egg_inspector
+   bash deploy/install.sh --backend webcam
+   ```
+   Then double-tap **Egg Inspector** on the desktop. If the webcam's number changes (another USB port, a
+   reboot with different devices), run this again.
+
+**On the station rig**, once the motors, sensors and ribbon camera are wired:
+
+6. **Check the wiring settings before connecting the UV-C lamp:** `PINS` and `ACTIVE_HIGH` in `config.py` must
    match the schematic and relay boards (see *Testing the hardware on the Pi*). Also calibrate `spin_seconds`.
-5. **Run one full tray from the terminal:**
+7. **Run one full tray from the terminal:**
    ```bash
    cd ~
    ~/egg-venv/bin/python -m egg_inspector --backend pi
    ```
-6. **Install the desktop app** once step 5 works:
+8. **Install the desktop app for the station** once step 7 works. This replaces the webcam icon:
    ```bash
    cd ~/egg_inspector
    bash deploy/install.sh --backend pi          # add --autostart to open it at login (kiosk)
@@ -203,6 +225,56 @@ The installer installs the system packages, creates a venv at `~/.local/share/eg
 - **Single instance:** a second tap on the icon while the app is open does nothing.
 - **Exit:** the **Exit** button (top right) or Esc. Exit is disabled during an inspection or UV-C run.
 - **Font:** the installer adds the Inter font if apt has it; otherwise the UI uses DejaVu Sans.
+
+## Test results
+
+Run these in order: first on a PC, then on the Pi. Fill in the **Pi** column as you go. Each test needs only
+the ones above it.
+
+- **PC** = Windows laptop, Intel 12th gen, 16 threads, PyTorch 2.14 CPU. Tested 2026-10-23 with
+  `model_best_quantized.pth`.
+- **Pi** = Raspberry Pi 5, USB webcam, Waveshare 7" (B). *Not tested yet.*
+
+| # | Test | Expected | PC | Pi |
+|---|---|---|---|---|
+| 1 | Model loads | No error | ✅ 2.3 s | |
+| 2 | One cracked photo (`IMG_2480.jpg`) | `CRACK`, score ~0.96, heatmap saved | ✅ 0.959, 8.8 s | |
+| 3 | One intact-looking photo (`IMG_2491.jpg`) | `no crack` | ✅ 0.130, 4.1 s | |
+| 4 | Photo batch in the app (10 photos from `Cracked`) | 10 results; header says "local model" | ✅ 5 cracked, 6.2 s per egg | |
+| 5 | Webcam opens | Live feed in the Optical panel | ✅ 640x480 | |
+| 6 | Live test | Result card updates after every check | ✅ 4–7 s per check | |
+| 7 | Live off/on quickly, Reset, Exit | One checking loop left; Reset stops Live; clean exit | ✅ | |
+| 8 | Desktop icon in webcam mode | Header "Test mode: webcam …", Live button | PC has no icon | |
+| 9 | Real rig (`--backend pi`) | Tray, spin, LEDs, UV-C | needs the rig | |
+
+Speeds are per photo. A crack takes longer, because the heatmap needs an extra step.
+
+### Commands
+
+On the PC (PowerShell), from the folder that contains `egg_inspector\`:
+
+```powershell
+python -m egg_inspector.model_client "Duck egg dataset\Cracked\IMG_2480.jpg" --heatmap heat.png      # tests 1-2
+python -m egg_inspector.model_client "Duck egg dataset\Cracked\IMG_2491.jpg"                         # test 3
+python -m egg_inspector --backend images --images "Duck egg dataset\Cracked" --windowed              # test 4: press Start
+python -m egg_inspector --backend webcam --camera 0 --windowed                                       # tests 5-7: tap Live
+```
+
+On the Pi (bash). The dataset photos aren't in the repository, so copy one cracked photo over first, for
+example to `~/IMG_2480.jpg`, or use a test photo from the station camera:
+
+The same steps as *Deploy on the Raspberry Pi* 3–5:
+
+```bash
+cd ~/egg_inspector && git pull && cd ~
+~/egg-venv/bin/python -m egg_inspector.model_client ~/IMG_2480.jpg --heatmap heat.png              # tests 1-2
+v4l2-ctl --list-devices                                                                              # find the webcam
+~/egg-venv/bin/python -m egg_inspector --backend webcam --camera /dev/videoN                         # tests 5-7
+cd ~/egg_inspector && bash deploy/install.sh --backend webcam                                        # test 8
+```
+
+The model check prints its time, for example `CRACK  score 0.959  (8.8 s, local model)`. Write that number in
+the Pi column. In the app, the time is shown under the verdict (`… · 4.6 s`).
 
 ## Operating the station
 
