@@ -3,6 +3,7 @@
 #
 #   bash deploy/install.sh                 # mock backend (fake images, no camera/model needed)
 #   bash deploy/install.sh --backend pi    # real camera, GPIO, UV-C relay and model
+#   bash deploy/install.sh --backend webcam [--camera /dev/videoN]   # USB webcam + Live test, no motors
 #   bash deploy/install.sh --autostart     # also open the app automatically at login (kiosk)
 #   bash deploy/install.sh --no-apt        # skip apt-get (offline / already installed)
 #   bash deploy/install.sh --uninstall     # remove icons, autostart entry and venv
@@ -15,17 +16,19 @@ BACKEND=mock
 AUTOSTART=0
 APT=1
 UNINSTALL=0
+CAMERA=
 while [ $# -gt 0 ]; do
     case "$1" in
         --backend)   BACKEND="${2:-}"; shift 2 ;;
         --autostart) AUTOSTART=1; shift ;;
         --no-apt)    APT=0; shift ;;
         --uninstall) UNINSTALL=1; shift ;;
-        -h|--help)   sed -n '2,13p' "$0"; exit 0 ;;
+        --camera)    CAMERA="${2:-}"; shift 2 ;;
+        -h|--help)   sed -n '2,14p' "$0"; exit 0 ;;
         *)           echo "Unknown option: $1 (try --help)" >&2; exit 2 ;;
     esac
 done
-case "$BACKEND" in mock|pi) ;; *) echo "--backend must be 'mock' or 'pi'" >&2; exit 2 ;; esac
+case "$BACKEND" in mock|pi|webcam) ;; *) echo "--backend must be 'mock', 'pi' or 'webcam'" >&2; exit 2 ;; esac
 
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(dirname "$DEPLOY_DIR")"
@@ -59,7 +62,8 @@ chmod +x "$DEPLOY_DIR/run.sh"
 if [ "$APT" = 1 ]; then
     say "Installing system packages (needs sudo)"
     pkgs=(python3-venv python3-tk python3-pil python3-pil.imagetk python3-numpy fonts-dejavu-core zenity)
-    [ "$BACKEND" = pi ] && pkgs+=(python3-picamera2 python3-gpiozero python3-opencv v4l-utils)
+    [ "$BACKEND" = pi ] && pkgs+=(python3-picamera2 python3-gpiozero)
+    [ "$BACKEND" != mock ] && pkgs+=(python3-opencv v4l-utils)      # USB webcam (Live test)
     sudo apt-get update
     sudo apt-get install -y "${pkgs[@]}"
     # UI font; optional, the app falls back to DejaVu Sans if it is unavailable.
@@ -73,7 +77,16 @@ python3 -m venv --system-site-packages "$VENV"
 "$VENV/bin/python" -c "import customtkinter, numpy, PIL.ImageTk, httpx, pydantic, torch, torchvision" \
     || { echo "Dependency check failed; see the messages above." >&2; exit 1; }
 
-say "Installing launcher (backend: $BACKEND)"
+ARGS="--backend $BACKEND"
+if [ "$BACKEND" = webcam ]; then
+    if [ -z "$CAMERA" ]; then         # first USB camera; on a Pi 5 the webcam often isn't /dev/video0
+        CAMERA="$(v4l2-ctl --list-devices 2>/dev/null | awk '/usb/ {getline; print $1; exit}')"
+    fi
+    [ -n "$CAMERA" ] || { echo "No USB webcam found. Plug it in, or pass --camera /dev/videoN" >&2; exit 1; }
+    ARGS="$ARGS --camera $CAMERA"
+fi
+
+say "Installing launcher ($ARGS)"
 cp "$DEPLOY_DIR/$APP_ID.svg" "$ICON"
 entry="[Desktop Entry]
 Type=Application
@@ -81,7 +94,7 @@ Version=1.0
 Name=Egg Inspector
 GenericName=Duck egg inspection + UV-C
 Comment=Micro-fissure inspection with UV-C disinfection
-Exec=\"$DEPLOY_DIR/run.sh\" --backend $BACKEND
+Exec=\"$DEPLOY_DIR/run.sh\" $ARGS
 Icon=$ICON
 Terminal=false
 Categories=Utility;
@@ -104,7 +117,7 @@ else
     rm -f "$AUTOSTART_FILE"
 fi
 
-if [ "$BACKEND" = pi ] && [ ! -f "$PKG_DIR/model_best.pth" ]; then
+if [ "$BACKEND" != mock ] && [ ! -f "$PKG_DIR/model_best.pth" ]; then
     say "Model weights missing: copy model_best.pth into $PKG_DIR (see README)"
 fi
 

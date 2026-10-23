@@ -370,6 +370,7 @@ class App(ctk.CTk):
         self._confirm_job: str | None = None
         self._uvc_elapsed = 0
         self._live = False
+        self._live_run = 0                             # bumps each time Live turns on
         self.title("Duck Egg Inspector")
         self._setup_window()
         self.s = self.H / 480                          # scale factor so 1024x600 etc. also fit
@@ -688,6 +689,7 @@ class App(ctk.CTk):
     def _btn_reset(self) -> None:
         if self.ctrl.running:
             return
+        self._set_live(False)
         self._cancel_confirm()
         self._close_zoom()
         self.backend.clear_leds()
@@ -732,25 +734,29 @@ class App(ctk.CTk):
         self.live_btn.configure(text="■  Live" if on else "Live")
         self._set_running(self.ctrl.running)
         if on:
+            self._live_run += 1                        # loops from an earlier Live session see this and stop
             self.tray.select(None)
             self._set_chip("Live test", C["uv"])
             self._set_message("Live test: hold an egg in front of the camera. Tap Live again to stop.", C["uv"])
-            threading.Thread(target=self._live_checks, daemon=True).start()
-            self._live_feed()
+            threading.Thread(target=self._live_checks, args=(self._live_run,), daemon=True).start()
+            self._live_feed(self._live_run)
         else:
             self._set_chip("Ready", C["blue"])
             self._set_message("")
 
-    def _live_feed(self) -> None:
-        if self._live:
+    def _live_on(self, run: int) -> bool:
+        return self._live and run == self._live_run
+
+    def _live_feed(self, run: int) -> None:
+        if self._live_on(run):
             frame = self.backend.live_frame()
             if frame is not None:
                 self.panels["optical"].show(frame)
-            self.after(LIVE_FEED_MS, self._live_feed)
+            self.after(LIVE_FEED_MS, self._live_feed, run)
 
-    def _live_checks(self) -> None:
+    def _live_checks(self, run: int) -> None:
         """Worker thread: check the newest frame, report it, repeat. Results go through the event queue."""
-        while self._live:
+        while self._live_on(run):
             frame = self.backend.live_frame()
             if frame is None:
                 time.sleep(0.05)
@@ -762,11 +768,12 @@ class App(ctk.CTk):
                 self.events.put(Event("live_error", f"{type(exc).__name__}: {exc}"))
                 return
             conf = view.score if view.cracked else 1 - view.score
-            self.events.put(Event("live", EggResult(-1, view.cracked, conf, frame, view.heatmap,
-                                                    (time.perf_counter() - t0) * 1000, source="live")))
+            r = EggResult(-1, view.cracked, conf, frame, view.heatmap, (time.perf_counter() - t0) * 1000, source="live")
+            self.events.put(Event("live", (run, r)))
 
-    def _ev_live(self, r: EggResult) -> None:
-        if self._live:                                     # drop a result that lands after Live was switched off
+    def _ev_live(self, data: tuple[int, EggResult]) -> None:
+        run, r = data
+        if self._live_on(run):                             # drop a result from a Live session that has ended
             self._show_result(r, "Live")
 
     def _ev_live_error(self, msg: str) -> None:

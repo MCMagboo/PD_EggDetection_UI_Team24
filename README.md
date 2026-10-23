@@ -194,6 +194,7 @@ Re-run the installer to change options:
 | Option | Meaning |
 |---|---|
 | *(none)* | Mock backend; works before the model and hardware are ready |
+| `--backend webcam` | USB webcam + Live test, real model, no motors. Finds the webcam itself, or add `--camera /dev/videoN` |
 | `--backend pi` | The station: real hardware + the trained model (needs `model_best.pth` + PyTorch, see *The crack-detection model*) |
 | `--autostart` | Open the app automatically at login (kiosk mode) |
 | `--no-apt` | Skip `apt-get` (offline or already installed) |
@@ -346,6 +347,17 @@ cd ~
 
 Use the webcam's own path from `v4l2-ctl` (on a Pi 5 it isn't always `/dev/video0`). Add `--windowed` to run in
 a window, or `--model api` to use the model API.
+
+To open webcam mode from the **desktop icon**, run the installer with it. It finds the USB webcam by itself;
+add `--camera /dev/videoN` to choose one:
+
+```bash
+cd ~/egg_inspector
+bash deploy/install.sh --backend webcam
+```
+
+The header must say "Test mode: webcam …" and show a **Live** button. If you see drawn orange eggs, or
+"Simulated results", the icon or command is still in `mock` or `--no-model` mode.
 
 On a PC (PowerShell): `pip install opencv-python-headless`, then
 `python -m egg_inspector --backend webcam --camera 0 --windowed`.

@@ -57,9 +57,10 @@ def open_webcam(camera: str):
 
 
 class ImageFolderBackend:
-    def __init__(self, cfg: Config, photos: list[Path]):
+    def __init__(self, cfg: Config, photos: list[Path], source: str = ""):
         self.cfg, self.photos = cfg, photos[:cfg.egg_count]
-        self.mode_note = f"Test mode: {len(self.photos)} photos from {photos[0].parent.name}, {_where(cfg)}"
+        source = source or f"{len(self.photos)} photos from {photos[0].parent.name}"
+        self.mode_note = f"Test mode: {source}, {_where(cfg)}"
         self.model = None
         self.pool = ThreadPoolExecutor(1, thread_name_prefix="model")
 
@@ -116,13 +117,12 @@ class WebcamBackend(ImageFolderBackend):
     stale one from OpenCV's buffer; live_frame() lets the UI show the feed and run the Live test."""
 
     def __init__(self, cfg: Config, camera: str):
-        self.cfg, self.model = cfg, None
-        self.mode_note = f"Test mode: webcam {camera}, {_where(cfg)}"
-        self.pool = ThreadPoolExecutor(1, thread_name_prefix="model")
+        super().__init__(cfg, [], f"webcam {camera}")
         self.cam = open_webcam(camera)
         self.frame: Image.Image | None = None
         self._reading = True
-        threading.Thread(target=self._read, daemon=True).start()
+        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader.start()
 
     def _read(self) -> None:
         while self._reading:
@@ -142,5 +142,6 @@ class WebcamBackend(ImageFolderBackend):
 
     def close(self) -> None:
         self._reading = False
+        self._reader.join(1)                     # OpenCV can crash if released mid-read on another thread
         super().close()
         self.cam.release()
