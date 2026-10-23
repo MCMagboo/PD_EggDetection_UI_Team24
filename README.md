@@ -350,7 +350,7 @@ meshes with the gear of whichever holder is at the camera station.
    camera, aligned so its gear meshes with the spin motor.
 2. **Egg spins:** the spin motor turns the egg about its vertical axis, 360° in `frames_per_egg` equal steps
    (default 8, i.e. every 45°). It stops and settles before each capture, so hairline cracks are not motion-blurred.
-3. **Capture:** one optical frame per step. It goes to the model API straight away, so inference runs while the
+3. **Capture:** one optical frame per step. It goes to the model straight away, so inference runs while the
    egg spins to the next angle (up to `model_parallel` views in flight).
 4. **Score:** the model scores every view. The egg is **rejected if any view** scores at or above the threshold.
 5. **Display:** the screen shows the highest-scoring view, its heatmap, and the angle where the crack faced the
