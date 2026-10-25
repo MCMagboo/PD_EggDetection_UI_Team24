@@ -4,7 +4,7 @@ customtkinter>=5.2
 # Model API client (Mask R-CNN on Modal); small, no PyTorch needed on the Pi.
 httpx>=0.28.1
 pydantic>=2.14
-# Local model (model_best.pth). On the Pi, PyPI's aarch64 wheels are CPU-only. On an x86 PC install the
-# CPU build first: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Local model (model_best_quantized.pth). Install the CPU build first, on the Pi too (install.sh does):
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 torch>=2.4
 torchvision>=0.19

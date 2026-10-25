@@ -24,7 +24,8 @@ GPIO or model.
 |---|---|
 | `--backend mock\|pi\|images\|webcam` | `mock` = fake data (default); `pi` = real camera, GPIO, UV-C relay and the model; `images` = your photos through the real model, no hardware; `webcam` = USB webcam with a Live test button |
 | `--images DIR` | With `--backend images`: folder of egg photos, one per tray slot |
-| `--camera 0` | With `--backend webcam`: webcam index or path, e.g. `/dev/video8` |
+| `--camera 0` | USB webcam index or path, e.g. `/dev/video8`. With `--backend webcam` (default `0`), or with `--backend pi` to use a USB webcam instead of the ribbon camera |
+| `--fps 30` | Camera frame rate, fixed (default `camera_fps` in `config.py`) |
 | `--model local\|api` | Crack model: `local` = `model_best_quantized.pth` on this machine (default); `api` = the Modal model API |
 | `--no-model` | With `--backend pi`: real camera, motors, LEDs, buzzer and UV-C; crack verdicts simulated (no network needed) |
 | `--fake-vision` | With `--backend pi`: like `--no-model` but with drawn eggs instead of the camera |
@@ -58,6 +59,7 @@ see the system packages:
 ```bash
 cd ~
 python3 -m venv --system-site-packages ~/egg-venv
+mkdir -p ~/egg-tmp && TMPDIR=~/egg-tmp ~/egg-venv/bin/pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu   # CPU-only build
 ~/egg-venv/bin/pip install -r ~/egg_inspector/deploy/requirements.txt
 ```
 
@@ -81,6 +83,8 @@ It prints the pin map and asks you to confirm it before touching any output. The
 | Tray: jog | Moves the tray for up to 3 s **without sensors**, e.g. to check direction before the sensors are wired. Jog back the other way so the wiring doesn't wind up |
 | Tray: home | Reverses until the home sensor triggers (holder 1 at the camera) |
 | Tray: next holder | Moves forward one holder and stops on the slot sensor. Check the holder gear meshes with the spin motor |
+| Tray: find the next egg with the camera | Without tray sensors (`tray_find = "camera"`, the default): runs the tray until the camera sees the next egg lined up. Needs `--camera` |
+| Camera: where is the egg | Prints the egg's position in the picture (0 to 1) for 20 s. Use it to set `egg_center`. Needs `--camera` |
 | Spin: one full turn | Runs the spin motor for `spin_seconds`. Mark the holder: it should turn **exactly once**. If not, adjust `spin_seconds` |
 | Spin: step sequence | The 8 stop-start steps used during inspection |
 | UV-C: short test | Max 10 s; you must type `UVC` to confirm. Refuses with the door open, and switches off if the door opens mid-test |
@@ -128,7 +132,8 @@ This runs a complete batch through the touchscreen app with the **real camera, t
 and UV-C**:
 
 1. The tray homes in reverse.
-2. For each holder: the tray moves forward, the egg spins in steps, and the camera takes 8 photos.
+2. For each holder: the tray moves forward and stops. Then the egg turns once without stopping while the camera
+   films it at a fixed frame rate, and the sharpest frame of each 45° is checked (8 views).
 3. The defect LED and buzzer signal any rejects.
 4. The tray reverses to holder 1.
 5. UV-C runs automatically if a crack was found (door must be closed).
@@ -240,7 +245,9 @@ In the terminal command, use the `/dev/...` the installer printed in step 5. The
 - Hold a candled egg in front of the webcam. Tap **Auto** on the Optical panel and keep the egg still for about
   5 s. The egg should show its shell, not a white "sun".
 - Tap **Live**. The result card and the text beside the heatmap update every few seconds.
-- Tap **Start** for the 10-slot cycle. Swap the egg between slots. If the picture is too bright, it waits.
+- Tap **Start** for the 10-slot cycle. Each slot watches **one full turn of the egg** (`spin_seconds`, 4 s):
+  turn the egg slowly by hand once, or let the rig's spin motor turn it. Swap the egg between slots. The status
+  line shows the camera's frame rate (e.g. "turning, view 3/8 (30 fps)"). If the picture is too bright, it waits.
 - Tap the heatmap of a rejected egg to see the full explanation.
 
 **8. Check that it works offline** (once):
@@ -352,6 +359,7 @@ The numbered steps below do the same by hand, plus the tests and the rig checks.
    sudo apt update
    sudo apt install -y python3-venv python3-tk python3-pil.imagetk python3-numpy python3-opencv v4l-utils
    python3 -m venv --system-site-packages ~/egg-venv      # skip if it already exists
+   mkdir -p ~/egg-tmp && TMPDIR=~/egg-tmp ~/egg-venv/bin/pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu   # CPU-only build
    ~/egg-venv/bin/pip install -r ~/egg_inspector/deploy/requirements.txt
    curl -fsSL https://ollama.com/install.sh | sh          # local SLM server for the heatmap explanation
    ollama pull qwen2.5:1.5b                                # the SLM itself, about 1 GB, once
@@ -529,7 +537,8 @@ Safety rules in software:
 | `backend_base.py` | `Backend` interface that both backends implement |
 | `mock_backend.py` | Fake images for development without hardware |
 | `image_backend.py` | `--backend images` (photo folder) and `--backend webcam` (USB webcam, Live test): the real model, no hardware |
-| `pi_backend.py` | Real camera, GPIO, UV-C relay; sends views to the model. Also `NoModelPiBackend` (real camera + hardware, simulated verdicts) and `FakeVisionPiBackend` (no camera) |
+| `camera.py` | Webcam and Pi camera at a fixed frame rate (reader thread), light control, and `sweep()`: the sharpest frame of each slice of a turn |
+| `pi_backend.py` | Real camera, GPIO, UV-C relay; films each egg's turn and sends the views to the model. Also `NoModelPiBackend` (real camera + hardware, simulated verdicts) and `FakeVisionPiBackend` (no camera) |
 | `local_model.py` | Runs `model_best_quantized.pth` (Mask R-CNN + XGrad-CAM) on this machine; the default |
 | `explain.py` | Measures the heatmap and has the local SLM (Ollama) explain it; fixed-wording fallback |
 | `test_explain.py` | Checks for `explain.py`: `python -m egg_inspector.test_explain` |
@@ -553,14 +562,64 @@ meshes with the gear of whichever holder is at the camera station.
    (e.g. after a Stop or power cut).
 1. **Tray moves:** the centre-shaft motor turns the tray forward (36° per slot) until the next holder is at the
    camera, aligned so its gear meshes with the spin motor.
-2. **Egg spins:** the spin motor turns the egg about its vertical axis, 360° in `frames_per_egg` equal steps
-   (default 8, i.e. every 45°). It stops and settles before each capture, so hairline cracks are not motion-blurred.
-3. **Capture:** one optical frame per step. It goes to the model straight away, so inference runs while the
-   egg spins to the next angle (up to `model_parallel` views in flight).
+2. **Tray settles:** the app waits `settle_seconds` so the tray and the egg stop wobbling. Frames taken while the
+   tray moves are never used.
+3. **Egg turns, camera films:** the spin motor turns the egg once about its vertical axis **without stopping**,
+   while the camera streams at a **fixed frame rate** (`camera_fps`, 30). The turn is split into
+   `frames_per_egg` equal slices (default 8, i.e. 45° each). In each slice the app keeps the **sharpest** frame,
+   the one with the least motion blur, and skips frames that are burnt white. At 30 fps and 4 s per turn there
+   is a frame every 3°, so each 45° slice has about 15 frames to choose from.
+   - The **tray** and the **egg** turn separately. The tray (centre shaft) only brings the holder to the camera.
+     The spin motor turns the egg itself. Only the egg's turn is filmed.
+   - The local model starts right after the turn, because it uses every CPU core and would make the camera drop
+     frames. With `--model api`, views go out during the turn (up to `model_parallel` at once).
+   - `spin_capture = "step"` brings back the older way: stop, settle, photo, eight times per turn.
 4. **Score:** the model scores every view. The egg is **rejected if any view** scores at or above the threshold.
 5. **Display:** the screen shows the highest-scoring view, its heatmap, and the angle where the crack faced the
    camera (e.g. "Micro-fissure at 135° · 8 views").
 6. **Return:** after egg 10, the tray **reverses** back to holder 1, then UV-C runs if needed.
+
+### Tray without sensors: the camera finds the eggs
+
+`tray_find = "camera"` in `config.py` (the default) needs **no home or slot sensors**. For each egg:
+
+1. **Find:** the tray runs forward. If an egg was just inspected, it first runs until that egg has left the
+   centre, then until the next egg comes near the lined-up position.
+2. **Line up:** it stops and nudges the tray in short pulses (`tray_pulse_seconds`) until the egg sits at
+   `egg_center` (± `egg_tolerance`). If a pulse overshoots, it nudges back. The L298N runs the motor at full speed
+   only, so pulses are how it stops in the right place.
+3. **Check:** the egg must stay lined up while the tray settles. Only then does it spin the egg and run the model.
+   The tray and the egg never turn at the same time.
+4. **Return:** after the last egg, the tray reverses and the camera **counts the eggs back to egg 1**, then lines
+   egg 1 up again. That unwinds the wiring, and the next Start begins at egg 1. Counting is exact; reversing
+   for the same time is not, because the tray coasts a little after every stop.
+
+How it sees an egg: the candled egg is the big bright area in the picture. An egg covers at least 2 % of the
+picture and is clearly brighter than its surroundings, so an empty holder or an even picture is "no egg". Keep the
+**candling light on**, and the area around the egg darker than the egg.
+
+Set it up once, on the Pi (bash):
+
+```bash
+cd ~
+~/.local/share/egg_inspector/venv/bin/python -m egg_inspector.hwtest --camera /dev/video0
+```
+
+1. **Tray: jog** until a holder's gear meshes with the spin motor's gear.
+2. **Camera: where is the egg** prints e.g. `egg at 0.47`. Put that number in `config.py` as `egg_center`. If the
+   eggs cross the picture top to bottom instead of left to right, set `egg_axis = "y"`.
+3. **Tray: find the next egg with the camera** a few times. Each time, the next egg should stop with its gear
+   meshing.
+4. **Tray: home** counts back to egg 1.
+
+**Before the first Start**, turn the tray so **egg 1 is at the camera or just before it**, in the forward direction.
+The camera can't tell which holder is number 1. After that, each batch returns to egg 1 by itself.
+
+- **Holders must not be empty:** an empty holder gives "No egg lined up at the camera within 8 s". Put an egg
+  in every holder, or set `egg_count` in `config.py` to the number of eggs.
+- **If it stops off the gear,** raise or lower `egg_center` a little, or lower `egg_tolerance`.
+- **If it hunts back and forth,** shorten `tray_pulse_seconds` (e.g. 0.03).
+- **With sensors fitted,** set `tray_find = "sensor"` to use the home and slot sensors instead.
 
 ### Tray direction and wiring
 
@@ -581,21 +640,30 @@ Spin settings in `config.py`:
 
 | Setting | Meaning |
 |---|---|
-| `frames_per_egg` | Views per full turn. More views catch smaller cracks but take longer. |
-| `spin_seconds` | Time for the spin motor to turn an egg exactly once (depends on the gear ratio). **Calibrate on the real rig.** |
-| `settle_seconds` | Pause after each step before the photo. |
+| `frames_per_egg` | Views checked per full turn. More views catch smaller cracks but take longer. |
+| `spin_seconds` | Time for the spin motor to turn an egg exactly once (depends on the gear ratio). **Calibrate on the real rig.** The app films for exactly this long. |
+| `spin_capture` | `"continuous"` (default): the egg turns without stopping and is filmed. `"step"`: stop, settle and photo, `frames_per_egg` times. |
+| `spin_ramp_seconds` | Continuous: wait after switching the spin motor on before filming, so it turns at a steady speed (0.2 s). |
+| `settle_seconds` | Pause after the tray stops (and in `"step"` mode after each step) before filming. |
+| `camera_fps` | Fixed camera frame rate (30). Also `--fps`. |
+| `camera_size` | USB webcam resolution (1280×720). |
 
-The spin step is time-based, for a DC motor on a relay (`spin_motor` pin). With a stepper motor, change
-`PiBackend._spin_step` to drive a fixed number of steps instead.
+The spin is time-based, for a DC motor on a relay (`spin_motor` pin): the angle of a frame is worked out from
+when it arrived. So the egg must turn at a steady speed, exactly once in `spin_seconds`. With a stepper motor,
+drive one full revolution in `spin_seconds` instead.
 
-**The two motors never run at the same time.** Spinning while the tray moves would grind the gears, so
-`_spin_step` refuses to start if the tray motor is still on.
+**Motion blur:** the sharpest frame wins, but a hairline crack still needs a short exposure. The candling light
+is bright, so short exposures are fine. If every view looks smeared, slow the spin down (raise `spin_seconds`
+after changing the gearing or motor voltage) or use a brighter candling light with a shorter exposure.
+
+**The two motors never run at the same time.** Spinning while the tray moves would grind the gears, so the
+spin refuses to start if the tray motor is still on.
 
 **Tray alignment matters:** if a holder stops slightly off position, its gear won't mesh and the egg won't turn.
 The tray stops when the slot sensor triggers, so place the sensor where the gears mesh. If the tray overshoots,
 slow the motor or add a mechanical detent. A stepper on the centre shaft would also give repeatable 36° steps.
 
-**Time per egg:** about `spin_seconds + frames_per_egg × (settle + capture + inference)`. With 8 views and a model
+**Time per egg:** about `settle + spin_ramp + spin_seconds + frames_per_egg × inference`. With 8 views and a model
 that takes 1 s per image on the Pi, expect roughly 12–13 s per egg, or about 2 minutes per tray. Measure it on
 the Pi and lower `frames_per_egg` if that's too slow.
 
@@ -635,6 +703,25 @@ cd ~
 
 Use the webcam's own path from `v4l2-ctl` (on a Pi 5 it isn't always `/dev/video0`). Add `--windowed` to run in
 a window, or `--model api` to use the model API.
+
+**Frame rate.** The app asks the webcam for a fixed **30 fps at 1280×720 in MJPG**. Most USB webcams only reach
+30 fps at 720p in MJPG; the raw format drops to 5–10 fps. On Linux it also switches off the webcam's habit of
+slowing down in dim light (`exposure_dynamic_framerate`). Light steps longer than one frame (1/30 s) are left out
+of − / + and Auto, so a manual exposure can't slow the camera down either. The real rate shows during **Live**
+("Camera 30 fps") and while an egg turns. If it is much lower, check what the webcam can do:
+
+```bash
+v4l2-ctl -d /dev/video0 --list-formats-ext      # look for MJPG 1280x720 at 30 fps
+```
+
+and set `camera_size` (e.g. `(640, 480)`) or `--fps` to a mode the webcam lists. Our laptop's built-in camera has
+no MJPG and gives 10 fps at 720p and 17 fps at 480p. That's still usable: about 5 frames per 45° slice.
+
+**Live while the egg turns:** Live checks the sharpest frame of the last half second, not simply the newest one,
+so a turning egg is judged on its least blurred frame.
+
+**The station with a USB webcam:** `--backend pi --camera /dev/videoN` uses the webcam instead of the ribbon camera,
+with the motors. The installer takes the same: `bash deploy/install.sh --backend pi --camera /dev/videoN`.
 
 To open webcam mode from the **desktop icon**, run the installer with it. It finds the USB webcam by itself;
 add `--camera /dev/videoN` to choose one:
@@ -681,6 +768,7 @@ updates rare: every new version of the weights adds another 88 MB to the reposit
 On the Pi (bash):
 
 ```bash
+mkdir -p ~/egg-tmp && TMPDIR=~/egg-tmp ~/egg-venv/bin/pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu   # CPU-only build
 ~/egg-venv/bin/pip install -r ~/egg_inspector/deploy/requirements.txt
 cd ~
 ~/egg-venv/bin/python -m egg_inspector.model_client ~/egg_camera_test.jpg --heatmap heat.png
@@ -865,6 +953,11 @@ Disk: plan on 2–3 GB in total on the Pi with the 1.5B SLM, or under 1 GB witho
   `config.py` applied in `PiBackend._init_camera`.
 
 - `spin_seconds` is a placeholder until it's measured on the real spin motor and gears.
+- Finding eggs with the camera (`tray_find = "camera"`) is tested on a simulated tray only, including coasting
+  and the count back to egg 1. Set `egg_center` on the real rig with `hwtest --camera`.
+- Filming the egg while it turns is tested with a simulated 30 fps camera on mock GPIO and with the laptop
+  webcam (10 fps). It hasn't run on the rig with the spin motor yet. The ribbon-camera stream (`PiCamera`)
+  hasn't been tried at all.
 - The tray code assumes a reversible motor plus home and slot sensors (see *Tray direction and wiring*). If the
   rig uses a stepper instead, `home_tray` and `_index_tray` in `pi_backend.py` need adapting.
 - `eggs_loaded()` always returns `True`; it needs a tray-presence sensor or camera check.

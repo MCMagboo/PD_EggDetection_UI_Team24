@@ -3,6 +3,7 @@
 #
 #   bash deploy/install.sh                 # mock backend (fake images, no camera/model needed)
 #   bash deploy/install.sh --backend pi    # real camera, GPIO, UV-C relay and model
+#   bash deploy/install.sh --backend pi --camera /dev/videoN   # the station with a USB webcam instead of the ribbon camera
 #   bash deploy/install.sh --backend webcam [--camera /dev/videoN]   # USB webcam + Live test, no motors
 #   bash deploy/install.sh --autostart     # also open the app automatically at login (kiosk)
 #   bash deploy/install.sh --no-apt        # skip apt-get (offline / already installed)
@@ -30,7 +31,7 @@ while [ $# -gt 0 ]; do
         --uninstall) UNINSTALL=1; shift ;;
         --camera)    CAMERA="${2:-}"; shift 2 ;;
         --no-slm)    SLM=0; shift ;;
-        -h|--help)   sed -n '2,17p' "$0"; exit 0 ;;
+        -h|--help)   sed -n '2,18p' "$0"; exit 0 ;;
         *)           echo "Unknown option: $1 (try --help)" >&2; exit 2 ;;
     esac
 done
@@ -80,7 +81,19 @@ say "Creating Python environment in $VENV"
 mkdir -p "$DATA"
 echo "$ORIG_ARGS" >"$DATA/install-args"         # update.sh reinstalls with the same options
 python3 -m venv --system-site-packages "$VENV"
-"$VENV/bin/pip" install --quiet --disable-pip-version-check -r "$DEPLOY_DIR/requirements.txt"
+# /tmp is a small RAM disk on Raspberry Pi OS (Debian 13), too small to unpack PyTorch: unpack on the SD card.
+export TMPDIR="$DATA/tmp"
+mkdir -p "$TMPDIR"
+PIP=("$VENV/bin/pip" install --quiet --disable-pip-version-check --no-cache-dir --timeout 60)
+# Weak Wi-Fi drops big downloads part-way; newer pip (25.1+) can resume them.
+if "$VENV/bin/pip" install --help 2>/dev/null | grep -- --resume-retries >/dev/null; then
+    PIP+=(--resume-retries 20)
+fi
+# The CPU-only PyTorch build (~200 MB). Plain PyPI may pick a build with NVIDIA GPU libraries (several GB),
+# which fills the SD card and is no use on a Pi.
+"${PIP[@]}" torch torchvision --index-url https://download.pytorch.org/whl/cpu
+"${PIP[@]}" -r "$DEPLOY_DIR/requirements.txt"
+rm -rf "$TMPDIR"
 "$VENV/bin/python" -c "import customtkinter, numpy, PIL.ImageTk, httpx, pydantic, torch, torchvision" \
     || { echo "Dependency check failed; see the messages above." >&2; exit 1; }
 
@@ -114,6 +127,8 @@ if [ "$BACKEND" = webcam ]; then
     fi
     [ -n "$CAMERA" ] || { echo "No USB webcam found. Plug it in, or pass --camera /dev/videoN" >&2; exit 1; }
     ARGS="$ARGS --camera $CAMERA"
+elif [ "$BACKEND" = pi ] && [ -n "$CAMERA" ]; then
+    ARGS="$ARGS --camera $CAMERA"     # USB webcam on the station instead of the ribbon camera
 fi
 
 say "Installing launcher ($ARGS)"

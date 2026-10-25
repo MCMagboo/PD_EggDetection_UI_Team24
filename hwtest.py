@@ -2,15 +2,18 @@
 
 Run on the Pi from the folder that CONTAINS egg_inspector/:
     python3 -m egg_inspector.hwtest
+    python3 -m egg_inspector.hwtest --camera /dev/video0     # with the USB webcam: find eggs with the camera
 
 Ctrl+C during a test switches everything off and returns to the menu; Ctrl+C at the menu quits.
 Check PINS and ACTIVE_HIGH in config.py against your wiring first.
 """
 from __future__ import annotations
 
+import argparse
 import threading
 import time
 
+from .camera import egg_position
 from .config import ACTIVE_HIGH, PINS, Config
 from .pi_backend import FakeVisionPiBackend
 
@@ -44,9 +47,13 @@ def print_pins() -> None:
 
 
 class HwTest:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, camera: str | None = None):
         self.cfg = cfg
-        self.hw = FakeVisionPiBackend(cfg)     # real GPIO devices, no camera/model
+        self.hw = FakeVisionPiBackend(cfg)     # real GPIO devices, no model
+        if camera:                             # USB webcam: lets the tray find eggs with the camera
+            from .camera import Webcam
+
+            self.hw.camera = Webcam(camera, cfg.camera_fps, cfg.camera_size)
         self.stop = threading.Event()           # Ctrl+C is handled as KeyboardInterrupt instead
 
     # ---- inputs ----------------------------------------------------------
@@ -101,12 +108,24 @@ class HwTest:
         print("  Done")
 
     def tray_home(self) -> None:
-        print("  Reversing to holder 1 (home sensor)...")
+        if self.cfg.tray_find == "camera":
+            print(f"  Reversing back to egg 1, counting eggs with the camera ({self.hw._found} found so far)...")
+        else:
+            print("  Reversing to holder 1 (home sensor)...")
         t0 = time.monotonic()
         self.hw.home_tray(self.stop)
         print(f"  Home in {time.monotonic() - t0:.1f} s")
 
     def tray_next(self) -> None:
+        if self.cfg.tray_find == "camera":
+            if self.hw.camera is None:
+                print("  tray_find is 'camera': start this test with --camera /dev/videoN")
+                return
+            t0 = time.monotonic()
+            self.hw._find_egg("Next egg", self.stop, lambda text: print("  " + text))
+            print(f"  Egg lined up in {time.monotonic() - t0:.2f} s. Check the holder gear meshes with the spin "
+                  "motor gear. If it stops off the gear, set egg_center in config.py (see 'Camera: where is the egg').")
+            return
         if self.hw.slot is None:
             print("  Position unknown: run 'Tray: home' first.")
             return
@@ -146,9 +165,22 @@ class HwTest:
     def camera(self) -> None:
         import os
 
-        from .pi_backend import open_camera
+        from .camera import open_camera
 
         path = os.path.expanduser("~/egg_camera_test.jpg")
+        if self.hw.camera is not None:             # the USB webcam
+            self.hw.backlight.on()
+            try:
+                time.sleep(1.5)
+                frame = self.hw.camera.live_frame()
+            finally:
+                self.hw.backlight.off()
+            if frame is None:
+                print("  No picture from the webcam.")
+                return
+            frame.save(path)
+            print(f"  Saved {path} ({frame.size[0]}x{frame.size[1]}). Open it to check focus, framing and exposure.")
+            return
         print("  Backlight on, capturing at 1640x1232 (the inspection resolution)...")
         cam = open_camera()
         self.hw.backlight.on()
@@ -161,6 +193,26 @@ class HwTest:
             self.hw.backlight.off()
             cam.close()
         print(f"  Saved {path}. Open it to check focus, framing and exposure of the egg at the camera.")
+
+    def egg_live(self) -> None:
+        if self.hw.camera is None:
+            print("  Start this test with --camera /dev/videoN")
+            return
+        axis, centre = self.cfg.egg_axis, self.cfg.egg_center
+        print(f"  Egg position for 20 s along {axis} (0 = {'left' if axis == 'x' else 'top'}, "
+              f"1 = {'right' if axis == 'x' else 'bottom'}); lined up = {centre:g} +/- {self.cfg.egg_tolerance:g}.")
+        print("  Jog the tray (or turn it by hand) until a holder's gear meshes with the spin gear, and note the")
+        print("  number: put it in config.py as egg_center. 'no egg' with an egg in view: turn the candling light on.")
+        end, last = time.monotonic() + 20, None
+        while time.monotonic() < end:
+            frame = self.hw.camera.live_frame()
+            pos = None if frame is None else egg_position(frame, axis)
+            line = "no egg" if pos is None else (f"egg at {pos:.2f}" + (
+                "   LINED UP" if abs(pos - centre) <= self.cfg.egg_tolerance else ""))
+            if line != last:
+                print("  " + line)
+                last = line
+            time.sleep(0.1)
 
     # ---- UV-C ------------------------------------------------------------
     def uvc(self) -> None:
@@ -194,14 +246,19 @@ class HwTest:
             ("Buzzer", self.buzzer),
             ("Tray: jog (no sensors, max 3 s)", self.tray_jog),
             ("Tray: home (reverse to holder 1)", self.tray_home),
-            ("Tray: next holder (forward)", self.tray_next),
+            ("Tray: next holder (forward)" if self.cfg.tray_find == "sensor" else
+             "Tray: find the next egg with the camera (forward)", self.tray_next),
+            ("Camera: where is the egg (live, set egg_center)", self.egg_live),
             ("Spin: one full turn (calibrate spin_seconds)", self.spin_full),
             ("Spin: step sequence as in inspection", self.spin_steps),
             ("UV-C: short test with door interlock", self.uvc),
             ("Camera: take a test photo (backlight on)", self.camera),
         ]
         while True:
-            where = "unknown (not homed)" if self.hw.slot is None else f"holder {self.hw.slot + 1}"
+            if self.cfg.tray_find == "camera":
+                where = f"egg {self.hw._found} of this run" if self.hw._found else "at the start"
+            else:
+                where = "unknown (not homed)" if self.hw.slot is None else f"holder {self.hw.slot + 1}"
             print(f"\n=== Egg Inspector hardware test ===   tray: {where}")
             for i, (label, _) in enumerate(items, 1):
                 print(f" {i:>2}  {label}")
@@ -226,6 +283,9 @@ class HwTest:
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description="Test the station hardware one device at a time")
+    ap.add_argument("--camera", help="USB webcam index or path, e.g. /dev/video0 (finds eggs with the camera)")
+    args = ap.parse_args()
     print(__doc__)
     print_pins()
     if ask("\nDo these pins and relay settings match your wiring? y/n", "n").lower() != "y":
@@ -234,7 +294,7 @@ def main() -> None:
     from gpiozero.exc import BadPinFactory
 
     try:
-        test = HwTest(Config())
+        test = HwTest(Config(), args.camera)
     except BadPinFactory:
         print("\nNo GPIO pins found: this test must run ON the Raspberry Pi.\n"
               "To rehearse the menu on a PC (nothing physical happens), set simulated pins first:\n"
@@ -247,6 +307,8 @@ def main() -> None:
         test.hw.safe_off()
         test.hw.backlight.off()
         test.hw.clear_leds()
+        if test.hw.camera is not None:
+            test.hw.camera.close()
         print("All outputs off.")
 
 

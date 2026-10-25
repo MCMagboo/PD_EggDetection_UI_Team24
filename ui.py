@@ -28,7 +28,7 @@ from .controller import InspectionController
 from .datatypes import EggResult, Event, Summary, UvcOutcome
 from .explain import Explainer, fact_lines, interpret, summary
 from .local_model import VALIDATED_THRESHOLD
-from .image_backend import OVEREXPOSED, TOO_BRIGHT, burnt
+from .camera import TOO_BRIGHT, burnt, sweep
 
 C = {
     "bg": "#EEF2F7", "card": "#FFFFFF", "subtle": "#F3F6FA", "line": "#E3E8EF", "track": "#E3E8EF",
@@ -43,7 +43,8 @@ BUTTONS = {                               # kind -> (fill, text colour)
 }
 TRAY_COLORS = {"ok": C["green"], "bad": C["red"]}
 VERDICTS = {"idle": ("Waiting", C["faint"]), "ok": ("Accepted", C["green"]), "bad": ("Rejected", C["red"])}
-LIVE_FEED_MS = 80                         # live camera refresh (~12 fps)
+LIVE_FEED_MS = 50                         # live picture refresh on screen (20 fps; the camera itself runs at camera_fps)
+LIVE_WINDOW_S = 0.5                       # Live checks the sharpest frame of the last half second (a turning egg blurs)
 UVC_CONFIRM_MS = 3000                     # second tap must land within this window
 SS = 3                                    # supersampling factor for Pillow-drawn shapes
 TK_FAMILIES = ("Inter", "Segoe UI", "DejaVu Sans")      # first one installed wins
@@ -398,6 +399,8 @@ class App(ctk.CTk):
         self._confirm_job: str | None = None
         self._uvc_elapsed = 0
         self._live = False
+        self._live_stop = threading.Event()            # set when Live turns off: ends that session's checks
+        self.cam = getattr(backend, "camera", None)    # the camera the UI can watch (webcam or Pi camera), or None
         self._shown: EggResult | None = None           # the result on screen (its heatmap can be explained)
         self.explainer = Explainer(cfg.explain_model, cfg.explain_url)
         self._slm_busy = False
@@ -493,7 +496,7 @@ class App(ctk.CTk):
         self.exit_btn.configure(width=self._px(60), corner_radius=self._px(10))
         self.exit_btn.pack(side="right")
         self.live_btn = None
-        if hasattr(self.backend, "live_frame"):                       # a camera the UI can watch (webcam backend)
+        if self.cam is not None and getattr(self.backend, "model", None) is not None:   # camera + real model
             self.live_btn = self._button(bar, "Live", self._toggle_live, size=9, height=30)
             self.live_btn.configure(width=self._px(70), corner_radius=self._px(10))
             self.live_btn.pack(side="right", padx=(0, self._px(8)))
@@ -522,7 +525,7 @@ class App(ctk.CTk):
             self.panels[key] = panel
         row.columnconfigure(tuple(range(len(specs))), weight=1, uniform="img")
         self._zoom_fonts = {"title": self._f(11, True), "hint": self._f(9)}
-        if hasattr(self.backend, "set_exposure"):                    # webcam: exposure for candling
+        if hasattr(self.cam, "set_exposure"):                        # webcam: exposure for candling
             self._build_light(self.panels["optical"])
         self._zoomed: ZoomView | None = None
 
@@ -546,25 +549,25 @@ class App(ctk.CTk):
         self._show_light()
 
     def _show_light(self) -> None:
-        e = self.backend.exposure
-        self.light_val.configure(text="☀ auto" if e is None else f"☀ {e + 1}/{self.backend.steps}")
+        e = self.cam.exposure
+        self.light_val.configure(text="☀ auto" if e is None else f"☀ {e + 1}/{self.cam.steps}")
 
     def _light_step(self, delta: int) -> None:
-        e = self.backend.exposure
-        self.backend.set_exposure(self.backend.steps // 2 if e is None else e + delta)
+        e = self.cam.exposure
+        self.cam.set_exposure(self.cam.steps // 2 if e is None else e + delta)
         self._show_light()
         self.after(400, self._check_light)               # the reader thread applies it between frames
 
     def _check_light(self) -> None:
         self._show_light()                               # the step count changes if it fell back to brightness
-        if self.backend.mode == "none":
-            self.backend.set_exposure(None)
+        if self.cam.mode == "none":
+            self.cam.set_exposure(None)
             self._ev_light(None)
 
     def _light_auto(self) -> None:
         self.light_val.configure(text="☀ …")
         self._set_message("Setting the light: hold a candled egg in front of the camera…", C["uv"])
-        threading.Thread(target=lambda: self.events.put(Event("light", self.backend.auto_light())),
+        threading.Thread(target=lambda: self.events.put(Event("light", self.cam.auto_light())),
                          daemon=True).start()
 
     def _ev_light(self, step: int | None) -> None:
@@ -572,12 +575,12 @@ class App(ctk.CTk):
         if step is None:
             self._set_message("This webcam doesn't let the app change its light. Dim or diffuse the candling "
                               "light, and fill the picture with the egg.", C["amber"])
-        elif self.backend.mode == "brightness":
+        elif self.cam.mode == "brightness":
             self._set_message(f"This webcam can't change its exposure, so brightness was turned down "
-                              f"({step + 1}/{self.backend.steps}). If the egg still glows white, dim or diffuse "
+                              f"({step + 1}/{self.cam.steps}). If the egg still glows white, dim or diffuse "
                               "the candling light.", C["amber"])
         else:
-            self._set_message(f"Light set to {step + 1}/{self.backend.steps}: the brightest exposure that keeps the "
+            self._set_message(f"Light set to {step + 1}/{self.cam.steps}: the brightest exposure that keeps the "
                               "egg's detail. Use − / + to fine-tune.", C["green"])
 
     def _zoom(self, img: Image.Image, title: str) -> None:
@@ -853,43 +856,53 @@ class App(ctk.CTk):
             self._set_live(not self._live)
 
     def _set_live(self, on: bool) -> None:
-        """Live test: the Optical panel follows the camera and the model checks the newest frame non-stop."""
+        """Live test: the Optical panel follows the camera and the model checks the sharpest recent frame non-stop."""
         if on == self._live or not self.live_btn:
             return
         self._live = on
+        self._live_stop.set()                          # ends the checks of the previous session
         self.live_btn.configure(text="■  Live" if on else "Live")
         self._set_running(self.ctrl.running)
         if on:
             self._live_run += 1                        # loops from an earlier Live session see this and stop
+            self._live_stop = threading.Event()
             self.tray.select(None)
             self._set_chip("Live test", C["uv"])
             self._set_message("Live test: hold an egg in front of the camera. Tap Live again to stop.", C["uv"])
-            threading.Thread(target=self._live_checks, args=(self._live_run,), daemon=True).start()
+            threading.Thread(target=self._live_checks, args=(self._live_run, self._live_stop), daemon=True).start()
             self._live_feed(self._live_run)
         else:
             self._set_chip("Ready", C["blue"])
             self._set_message("")
+            self.status.configure(text="")
 
     def _live_on(self, run: int) -> bool:
         return self._live and run == self._live_run
 
     def _live_feed(self, run: int) -> None:
         if self._live_on(run):
-            frame = self.backend.live_frame()
+            frame = self.cam.live_frame()
             if frame is not None:
                 self.panels["optical"].show(frame)
+            fps = f"Camera {self.cam.fps:.0f} fps"
+            if self.status.cget("text") != fps:
+                self.status.configure(text=fps)
             self.after(LIVE_FEED_MS, self._live_feed, run)
 
-    def _live_checks(self, run: int) -> None:
-        """Worker thread: check the newest frame, report it, repeat. Results go through the event queue."""
+    def _live_checks(self, run: int, stop: threading.Event) -> None:
+        """Worker thread: check the sharpest frame of the last half second (least motion blur while the egg
+        turns), report it, repeat. Results go through the event queue."""
         while self._live_on(run):
-            frame = self.backend.live_frame()
-            if frame is None:
-                time.sleep(0.05)
-                continue
-            white = burnt(frame)
-            if white > OVEREXPOSED:                       # don't judge a white blob; wait for a usable picture
-                self.events.put(Event("live_bright", (run, white)))
+            picked: list = []
+            try:
+                if not sweep(self.cam, LIVE_WINDOW_S, 1, stop, lambda _k, f: picked.append(f)):
+                    return                                # Live was switched off
+            except RuntimeError as exc:                   # the camera stopped sending pictures
+                self.events.put(Event("live_error", str(exc)))
+                return
+            frame = picked[0]
+            if frame is None:                             # every frame burnt white: don't judge a white blob
+                self.events.put(Event("live_bright", (run, burnt(self.cam.frame))))
                 time.sleep(0.5)
                 continue
             t0 = time.perf_counter()
@@ -945,7 +958,7 @@ class App(ctk.CTk):
             self._too_bright = True
             self.status.configure(text="Waiting: too bright")
             self._set_message(text, C["amber"])
-            frame = self.backend.live_frame()            # show the camera so the light can be adjusted while waiting
+            frame = self.cam.live_frame()            # show the camera so the light can be adjusted while waiting
             if frame is not None:
                 self.panels["optical"].show(frame)
             return
@@ -1008,6 +1021,7 @@ class App(ctk.CTk):
 
     def _quit(self) -> None:
         self._live = False
+        self._live_stop.set()
         self.ctrl.stop()
         self.ctrl.join()
         self.backend.close()
