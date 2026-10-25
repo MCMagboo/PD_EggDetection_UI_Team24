@@ -4,7 +4,7 @@
 #   bash deploy/install.sh                 # mock backend (fake images, no camera/model needed)
 #   bash deploy/install.sh --backend pi    # real camera, GPIO, UV-C relay and model
 #   bash deploy/install.sh --backend pi --camera /dev/videoN   # the station with a USB webcam instead of the ribbon camera
-#   bash deploy/install.sh --backend webcam [--camera /dev/videoN]   # USB webcam + Live test, no motors
+#   bash deploy/install.sh --backend webcam [--camera /dev/videoN]   # USB webcam + Live test, no GPIO
 #   bash deploy/install.sh --autostart     # also open the app automatically at login (kiosk)
 #   bash deploy/install.sh --no-apt        # skip apt-get (offline / already installed)
 #   bash deploy/install.sh --no-slm        # skip Ollama + the small language model (heatmap explanations)

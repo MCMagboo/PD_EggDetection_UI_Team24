@@ -1,12 +1,9 @@
-"""Cameras with a fixed frame rate, and capture while the egg turns.
-
-Two motions on the rig: the TRAY (centre shaft) carries the holders to the camera, and the SPIN motor there turns
-one egg about its own axis. Frames are only used while the tray is still and the egg is turning.
+"""Cameras with a fixed frame rate, and picking a sharp, usable frame.
 
 Webcam (USB, OpenCV) and PiCamera (ribbon camera, Picamera2) both run a reader thread at a fixed frame rate and
-keep only the newest frame, numbered, with the time it arrived. sweep() then watches one full turn of the egg: the
-turn is split into equal time slices (equal angles at a steady spin speed), and in each slice it keeps the sharpest
-frame that isn't burnt white. Motion blur hides hairline cracks, so the sharpest frame wins.
+keep only the newest frame, numbered, with the time it arrived. sweep() watches the camera for a while and keeps
+the sharpest frame that isn't burnt white (motion blur and glare both hide hairline cracks); capture() first waits
+until the picture is usable, then takes the sharpest frame of half a second.
 """
 from __future__ import annotations
 
@@ -208,6 +205,7 @@ class Webcam(_Stream):
         more than 1 % of the picture is clipped white, then keep the step before. Takes a few seconds.
         Returns None, and goes back to the camera's own setting, if the webcam takes neither exposure nor
         brightness."""
+        self.mode = "exposure"                   # find out again what this webcam takes (a saved "none" may be stale)
         self.set_exposure(0, save=False)         # also finds out whether the driver takes exposure
         time.sleep(settle)
         best = 0
@@ -260,47 +258,15 @@ class PiCamera(_Stream):
         self.cam.close()
 
 
-EGG_AREA = (0.02, 0.8)        # an egg covers 2-80 % of the picture
-EGG_CONTRAST = 30             # and is at least this much brighter (0-255) than its surroundings
-EGG_MIN_WIDTH = 0.08          # and at least 8 % of the picture wide along the tray's direction
-
-
-def egg_position(frame: Image.Image, axis: str = "x") -> float | None:
-    """Where the egg is along the tray's direction of travel in the picture (0 = left/top, 1 = right/bottom), or
-    None if there's no egg in view. The candled egg is the big bright region: an Otsu threshold on a small grey
-    copy, then the widest run of bright columns (axis "x") or rows (axis "y")."""
-    small = frame.convert("L")
-    small.thumbnail((160, 160))
-    g = np.asarray(small)
-    p = np.bincount(g.ravel(), minlength=256) / g.size
-    omega, mu = np.cumsum(p), np.cumsum(p * np.arange(256))
-    with np.errstate(divide="ignore", invalid="ignore"):
-        between = (mu[-1] * omega - mu) ** 2 / (omega * (1 - omega))
-    mask = g > int(np.nanargmax(between))
-    if not EGG_AREA[0] <= mask.mean() <= EGG_AREA[1]:
-        return None
-    if g[mask].mean() - g[~mask].mean() < EGG_CONTRAST:
-        return None                           # an even picture (empty holder): the threshold only split noise
-    bright = mask.mean(axis=0 if axis == "x" else 1) > 0.15
-    best, start = (0, 0), None
-    for i, on in enumerate(np.append(bright, False)):
-        if on and start is None:
-            start = i
-        elif not on and start is not None:
-            best = max(best, (start, i), key=lambda run: run[1] - run[0])
-            start = None
-    if (best[1] - best[0]) / len(bright) < EGG_MIN_WIDTH:
-        return None
-    return (best[0] + best[1]) / 2 / len(bright)
-
-
 def wait_usable(cam: _Stream, stop: threading.Event, warn: Callable[[float], None]) -> bool:
     """Wait until the picture isn't burnt white (a white blob hides any crack, so judging it would be a guess).
     `warn(share burnt)` is called while waiting. False if Stop was pressed."""
     while True:
         frame = cam.frame
-        if frame is None:
-            raise RuntimeError(f"No picture from the {cam.name}")
+        if frame is None:                        # the camera has just been opened: give it a moment
+            if cam.next_frame(0, timeout=3.0) is None:
+                raise RuntimeError(f"No picture from the {cam.name}")
+            continue
         white = burnt(frame)
         if white <= OVEREXPOSED:
             return True
@@ -311,9 +277,9 @@ def wait_usable(cam: _Stream, stop: threading.Event, warn: Callable[[float], Non
 
 def sweep(cam: _Stream, seconds: float, views: int, stop: threading.Event,
           on_view: Callable[[int, Image.Image | None], None]) -> bool:
-    """Watch the camera for `seconds` (one full turn of the egg) split into `views` equal slices. At the end of each
-    slice, `on_view(k, frame)` gets that slice's sharpest frame that isn't burnt white (None if every frame in it
-    was), so the caller can start the model while the egg keeps turning. False if Stop was pressed."""
+    """Watch the camera for `seconds` split into `views` equal slices. At the end of each slice, `on_view(k, frame)`
+    gets that slice's sharpest frame that isn't burnt white (None if every frame in it was). False if Stop was
+    pressed."""
     after = cam.seq                              # only frames taken from now on
     start = time.monotonic()
     best: tuple[float, Image.Image] | None = None
@@ -334,3 +300,17 @@ def sweep(cam: _Stream, seconds: float, views: int, stop: threading.Event,
             if best is None or score > best[0]:
                 best = (score, frame)
     return True
+
+
+def capture(cam: _Stream, stop: threading.Event, warn: Callable[[float], None],
+            seconds: float = 0.5) -> Image.Image | None:
+    """Wait until the picture isn't burnt white, then return the sharpest usable frame of the next `seconds`.
+    `warn(share burnt)` is called while waiting. None if Stop was pressed."""
+    while True:
+        if not wait_usable(cam, stop, warn):
+            return None
+        picked: list = []
+        if not sweep(cam, seconds, 1, stop, lambda _k, frame: picked.append(frame)):
+            return None
+        if picked[0] is not None:
+            return picked[0]

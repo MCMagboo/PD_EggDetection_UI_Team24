@@ -1,10 +1,10 @@
 """Test backends with no Pi hardware: photos from a folder, or a USB webcam, go through the REAL model.
 
 images: each tray slot gets one photo (sorted by file name; the tray shrinks if there are fewer than egg_count).
-webcam: each tray slot watches one full turn of the egg (spin_seconds) at the camera's fixed frame rate and checks
-the sharpest frame of every 1/frames_per_egg of the turn, as on the rig; the UI's Live button checks non-stop.
+webcam: each tray slot takes the sharpest usable frame of half a second (camera.capture); the UI's Live button
+checks non-stop. Place the next egg in front of the camera between slots.
 Verdicts, confidence and XGrad-CAM heatmaps all come from the trained Mask R-CNN; nothing is simulated.
-Motors, LEDs, buzzer and UV-C are only logged (turn the egg by hand, or run the rig's spin motor).
+LEDs, buzzer and UV-C are only logged.
 
     python -m egg_inspector --backend images --images C:\\path\\to\\photos --windowed
     python -m egg_inspector --backend webcam --camera 0 --windowed        (Pi: --camera /dev/videoN)
@@ -18,11 +18,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .backend_base import Progress
-from .camera import Webcam
+from PIL import Image
+
+from .camera import TOO_BRIGHT, Webcam, capture
 from .config import Config
 from .datatypes import EggResult
-from .model_client import ViewScore, load_model, open_photo
-from .pi_backend import PiBackend, View, capture_turn
+from .model_client import load_model, open_photo
+from .pi_backend import PiBackend, wait_for_swap
 
 log = logging.getLogger(__name__)
 
@@ -53,12 +55,10 @@ class ImageFolderBackend:
         self.model = None
         self.pool = ThreadPoolExecutor(1, thread_name_prefix="model")
 
-    def _views(self, index: int, stop: threading.Event, progress: Progress) -> tuple[list[View], str] | None:
-        """The pictures of egg `index`, each already handed to the model, and where they came from."""
+    def _photo(self, index: int, stop: threading.Event, progress: Progress) -> tuple[Image.Image, str] | None:
+        """The picture of egg `index` and where it came from; None if Stop was pressed while waiting for it."""
         path = self.photos[index]
-        photo = open_photo(path)
-        progress(f"Egg {index + 1}/{self.cfg.egg_count}: checking {path.name}")
-        return [(photo, self.pool.submit(self.model.predict, photo), 0.0)], path.name
+        return open_photo(path), path.name
 
     def prepare(self) -> None:
         self.model = load_model(self.cfg)
@@ -70,27 +70,18 @@ class ImageFolderBackend:
     def enclosure_closed(self) -> bool:
         return True
 
-    def home_tray(self, stop: threading.Event) -> bool:
-        return not stop.is_set()
-
     def inspect_egg(self, index: int, stop: threading.Event, progress: Progress) -> EggResult | None:
         t0 = time.perf_counter()
-        got = self._views(index, stop, progress)
-        if got is None:                          # stopped while capturing
+        got = self._photo(index, stop, progress)
+        if got is None:                          # stopped while waiting for a usable picture
             return None
-        views, name = got
-        scores: list[ViewScore] = []
-        for _, pending, _ in views:
-            score = PiBackend._await(pending, stop)
-            if score is None:
-                PiBackend._cancel(views)
-                return None
-            scores.append(score)
-        best = max(range(len(views)), key=lambda k: scores[k].score)
-        view = scores[best]
-        return EggResult(index, view.cracked, view.score if view.cracked else 1 - view.score, views[best][0],
-                         view.heatmap, (time.perf_counter() - t0) * 1000, views=len(views),
-                         angle_deg=views[best][2], source=name, facts=view.facts)
+        photo, name = got
+        progress(f"Egg {index + 1}/{self.cfg.egg_count}: checking {name}")
+        view = PiBackend._await(self.pool.submit(self.model.predict, photo), stop)
+        if view is None:
+            return None
+        return EggResult(index, view.cracked, view.score if view.cracked else 1 - view.score, photo,
+                         view.heatmap, (time.perf_counter() - t0) * 1000, source=name, facts=view.facts)
 
     def set_defect_led(self, index: int, on: bool) -> None:
         log.info("Defect LED %d %s", index + 1, "on" if on else "off")
@@ -114,18 +105,21 @@ class ImageFolderBackend:
 
 
 class WebcamBackend(ImageFolderBackend):
-    """A USB webcam instead of photos, at a fixed frame rate. Each egg: one full turn (spin_seconds) split into
-    frames_per_egg slices; the sharpest usable frame of each slice is checked (pi_backend.capture_turn).
-    The UI's Live button watches the same camera (backend.camera)."""
+    """A USB webcam instead of photos, at a fixed frame rate. Each slot takes the sharpest usable frame of half a
+    second, after waiting while the picture is burnt white. The UI's Live button watches the same camera."""
 
     def __init__(self, cfg: Config, camera: str):
         super().__init__(cfg, [], f"webcam {camera}, {cfg.camera_fps} fps")
         self.camera = Webcam(camera, cfg.camera_fps, cfg.camera_size)
 
-    def _views(self, index: int, stop: threading.Event, progress: Progress) -> tuple[list[View], str] | None:
-        views = capture_turn(self.camera, self.cfg, f"Egg {index + 1}/{self.cfg.egg_count}", stop, progress,
-                             lambda frame: self.pool.submit(self.model.predict, frame))
-        return None if views is None else (views, "")     # no file name: the result line shows the angle
+    def _photo(self, index: int, stop: threading.Event, progress: Progress) -> tuple[Image.Image, str] | None:
+        egg = f"Egg {index + 1}/{self.cfg.egg_count}"
+        if not wait_for_swap(self.cfg, index, stop, progress):
+            return None
+        frame = capture(self.camera, stop, lambda white: progress(
+            f"{TOO_BRIGHT} {egg}: {white:.0%} of the picture is burnt white. Waiting: tap Auto (Light), or dim / "
+            "diffuse the candling light."))
+        return None if frame is None else (frame, "webcam")
 
     def close(self) -> None:
         self.camera.close()

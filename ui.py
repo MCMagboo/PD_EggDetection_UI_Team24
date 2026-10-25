@@ -791,10 +791,8 @@ class App(ctk.CTk):
         self._set_verdict("bad" if bad else "ok")
         if bad and r.facts:                            # the heatmap in a few words; tap it for the full explanation
             what = f"Micro-fissure  ·  {summary(r.facts)}"
-        elif r.source:                                 # photo test mode: no spin, show which file it was
-            what = f"{'Micro-fissure' if bad else 'No micro-fissure'}  ·  {r.source}"
-        else:
-            what = f"Micro-fissure at {r.angle_deg:.0f}°  ·  {r.views} views" if bad else f"No micro-fissure  ·  {r.views} views"
+        else:                                          # where the picture came from (a file name in photo mode)
+            what = "  ·  ".join(filter(None, ["Micro-fissure" if bad else "No micro-fissure", r.source]))
         self.detail.configure(text=f"{what}  ·  {r.latency_ms / 1000:.1f} s")
         self.egg_tag.configure(text=tag)
         self.conf_val.configure(text=f"{r.confidence * 100:.1f}%")
@@ -861,6 +859,8 @@ class App(ctk.CTk):
             return
         self._live = on
         self._live_stop.set()                          # ends the checks of the previous session
+        if hasattr(self.backend, "light"):             # the station's candling light: on while Live runs
+            self.backend.light(on)
         self.live_btn.configure(text="■  Live" if on else "Live")
         self._set_running(self.ctrl.running)
         if on:

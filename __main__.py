@@ -24,9 +24,9 @@ def main() -> None:
     ap.add_argument("--size", default="800x480", help="window size when --windowed, e.g. 1024x600")
     sim = ap.add_mutually_exclusive_group()
     sim.add_argument("--no-model", action="store_true",
-                     help="with --backend pi: real camera, motors, LEDs and UV-C; simulated crack verdicts")
+                     help="with --backend pi: real camera, light, LEDs and UV-C; simulated crack verdicts")
     sim.add_argument("--fake-vision", action="store_true",
-                     help="with --backend pi: real motors/LEDs/UV-C, synthetic images instead of camera + model")
+                     help="with --backend pi: real light/LEDs/UV-C, synthetic images instead of camera + model")
     ap.add_argument("--fast", action="store_true", help="speed up the mock backend")
     ap.add_argument("--seed", type=int, default=None, help="random seed for the mock backend")
     args = ap.parse_args()

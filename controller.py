@@ -72,13 +72,9 @@ class InspectionController:
 
     def _cycle(self) -> None:
         self.backend.clear_leds()
-        self._emit("status", "Checking tray")
+        self._emit("status", "Getting ready")
         if not self.backend.eggs_loaded():
             self._emit("error", "No eggs detected. Load the tray and press Start.")
-            return
-        self._emit("status", "Homing tray")
-        if not self.backend.home_tray(self._stop):     # left mid-way by an earlier Stop or fault
-            self._emit("stopped")
             return
         t0 = time.perf_counter()
         flagged = self._inspect_all()
@@ -86,10 +82,6 @@ class InspectionController:
             self._emit("stopped")
             return
         inspection_s = time.perf_counter() - t0
-        self._emit("status", "Returning tray to holder 1")
-        if not self.backend.home_tray(self._stop):     # reverse, so the tray wiring unwinds
-            self._emit("stopped")
-            return
         if not flagged:
             outcome = UvcOutcome("skipped", "No cracks found, so UV-C was not needed.")
         elif not self.auto_uvc:
