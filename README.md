@@ -26,7 +26,7 @@ GPIO or model.
 | `--images DIR` | With `--backend images`: folder of egg photos, one per tray slot |
 | `--camera 0` | USB webcam index or path, e.g. `/dev/video8`. With `--backend webcam` (default `0`), or with `--backend pi` to use a USB webcam instead of the ribbon camera |
 | `--fps 30` | Camera frame rate, fixed (default `camera_fps` in `config.py`) |
-| `--model local\|api` | Crack model: `local` = `model_best_quantized.pth` on this machine (default); `api` = the Modal model API |
+| `--model local\|api` | Crack model: `local` = `model_best.pth` on this machine, or `model_best_quantized.pth` if that isn't there (default); `api` = the Modal model API |
 | `--no-model` | With `--backend pi`: real camera, candling light, LEDs, buzzer and UV-C; crack verdicts simulated (no network needed) |
 | `--fake-vision` | With `--backend pi`: like `--no-model` but with drawn eggs instead of the camera |
 | `--windowed` | Run in a window instead of fullscreen |
@@ -673,9 +673,18 @@ The weights come with the repository: `model_best_quantized.pth` (88 MB). It is 
 as a 16-bit float instead of 32-bit, so half the size. On the dataset photos it gives the same verdicts as the
 full file, with scores within 0.001. Only PyTorch needs installing.
 
-The full `model_best.pth` (176 MB) is too big for GitHub (the limit is 100 MB per file), so `.gitignore` keeps it
-out. To use it locally, put it next to `config.py` and set `model_path = "model_best.pth"`. Keep later model
-updates rare: every new version of the weights adds another 88 MB to the repository's history.
+**The app uses the full `model_best.pth` (176 MB) whenever it is in the `egg_inspector` folder**, and
+`model_best_quantized.pth` otherwise (`model_path` / `model_fallback` in `config.py`). The full file is too big for
+GitHub (the limit is 100 MB per file), so `.gitignore` keeps it out and it must be **copied in by hand** (PC
+PowerShell, from the folder that contains `egg_inspector\`):
+
+```powershell
+scp egg_inspector\model_best.pth team24@team24.local:~/egg_inspector/
+```
+
+`selfcheck` prints which file it uses (`crack model file  model_best.pth (168 MB)`). Both files load as the same
+32-bit network, so they use the same memory and time per photo. Keep later model updates rare: every new version
+of the small file adds another 88 MB to the repository's history.
 
 On the Pi (bash):
 

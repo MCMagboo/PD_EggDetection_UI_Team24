@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
 
 from .config import Config
+from .model_client import model_file
 
 SAMPLE = {"score": 0.959, "threshold": 0.83, "box_place": "centre", "box_area": 0.455, "hot_place": "centre",
           "hot_area": 0.035, "hot_spots": 3, "on_crack": 0.895}         # measurements of a real cracked egg
@@ -27,8 +27,7 @@ def main() -> None:
         rows.append(("OK  " if passed else ("FAIL" if needed else "--  "), name, note))
         print(f"{rows[-1][0]}  {name}  {note}", flush=True)
 
-    weights = Path(cfg.model_path)
-    weights = weights if weights.is_absolute() else Path(__file__).resolve().parent / weights
+    weights = model_file(cfg)
     row(weights.is_file(), "crack model file", f"{weights.name} ({weights.stat().st_size / 2**20:.0f} MB)"
         if weights.is_file() else f"missing: {weights}")
     try:

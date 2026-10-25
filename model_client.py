@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ from urllib.parse import urlsplit
 from PIL import Image
 
 from .api_contract import PredictionResponse
+
+log = logging.getLogger(__name__)
 
 MAX_UPLOAD = 10 * 1024 * 1024               # the API rejects larger files
 MAX_SIDE = 2048                             # ...and larger images (HTTP 413); phone photos are 4032 px
@@ -138,14 +141,21 @@ def load_model(cfg):
         return CrackModel.from_env(cfg.model_api_url, cfg.detect_threshold)
     if cfg.model_source != "local":
         raise ValueError(f"model_source must be 'local' or 'api', not {cfg.model_source!r}")
-    from pathlib import Path
-
     from .local_model import LocalCrackModel
 
-    path = Path(cfg.model_path)
-    if not path.is_absolute():
-        path = Path(__file__).resolve().parent / path
+    path = model_file(cfg)
+    log.info("Crack model: %s", path.name)
     return LocalCrackModel(path, cfg.detect_threshold)
+
+
+def model_file(cfg):
+    """cfg.model_path if that file is there, else cfg.model_fallback if that is (relative paths are inside the
+    egg_inspector folder). If neither exists, model_path, so the error names the file that was asked for."""
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    paths = [p if p.is_absolute() else here / p for p in (Path(cfg.model_path), Path(cfg.model_fallback))]
+    return next((p for p in paths if p.is_file()), paths[0])
 
 
 def main() -> None:
@@ -156,7 +166,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Score one photo with the crack model and print the verdict")
     ap.add_argument("image")
     ap.add_argument("--model", choices=["local", "api"], default=Config.model_source,
-                    help="local = model_best_quantized.pth on this machine (default); api = the Modal model API")
+                    help="local = model_best.pth (or model_best_quantized.pth) on this machine (default); api = the Modal model API")
     ap.add_argument("--heatmap", help="save the XGrad-CAM overlay here (only produced for cracks)")
     args = ap.parse_args()
     if not os.path.isfile(args.image):

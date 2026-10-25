@@ -15,7 +15,7 @@ def main() -> None:
                          "images = photos from --images through the real model API (no hardware); "
                          "webcam = USB webcam --camera through the real model, with a Live button (no hardware)")
     ap.add_argument("--model", choices=["local", "api"], default=None,
-                    help="crack model: local = model_best_quantized.pth on this machine (default), api = the Modal model API")
+                    help="crack model: local = model_best.pth (or model_best_quantized.pth) on this machine (default), api = the Modal model API")
     ap.add_argument("--camera", help="USB webcam: index (0 = first) or path, e.g. /dev/video8. With --backend webcam "
                          "(default 0), or with --backend pi to use it instead of the ribbon camera")
     ap.add_argument("--fps", type=int, help=f"camera frame rate (default {Config.camera_fps})")

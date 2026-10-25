@@ -162,8 +162,12 @@ else
     rm -f "$AUTOSTART_FILE"
 fi
 
-if [ "$BACKEND" != mock ] && [ ! -f "$PKG_DIR/model_best_quantized.pth" ]; then
-    say "Model weights missing: $PKG_DIR/model_best_quantized.pth (it comes with git pull; see README)"
+if [ "$BACKEND" != mock ] && [ ! -f "$PKG_DIR/model_best.pth" ]; then
+    if [ -f "$PKG_DIR/model_best_quantized.pth" ]; then
+        say "Using model_best_quantized.pth. For the full model, copy model_best.pth into $PKG_DIR (see README)"
+    else
+        say "Model weights missing: $PKG_DIR/model_best_quantized.pth (it comes with git pull; see README)"
+    fi
 fi
 
 say "Checking that everything runs on this Pi without internet"

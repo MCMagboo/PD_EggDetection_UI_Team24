@@ -11,8 +11,9 @@ class Config:
     auto_uvc: bool = True             # start UV-C automatically when cracked eggs are found (operator can toggle)
     detect_threshold: float | None = None   # crack score cut-off; None = the model's validated threshold (0.83)
     model_source: str = "local"       # "local" = the weights file below, on this machine; "api" = the Modal model API
-    model_path: str = "model_best_quantized.pth"  # half-precision copy of model_best.pth (in git, same verdicts);
-                                                  # relative paths are inside the egg_inspector folder
+    model_path: str = "model_best.pth"            # the full model (176 MB, too big for GitHub: copy it in by hand);
+    model_fallback: str = "model_best_quantized.pth"   # used when model_path is missing (88 MB half-precision copy,
+                                                  # in git); relative paths are inside the egg_inspector folder
     explain_model: str = "qwen2.5:1.5b"   # small language model (Ollama) that words the heatmap explanation
     explain_url: str = "http://127.0.0.1:11434"   # Ollama on this machine
     model_api_url: str = "https://qeresanjuan-capstone-maskrcnn--capstone-maskrcnn-api-cra-86a8eb.us-east.modal.run"
