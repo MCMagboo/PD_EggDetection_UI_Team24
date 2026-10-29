@@ -1,4 +1,5 @@
-"""Real Raspberry Pi 5 backend: camera, model, candling light, defect LEDs, buzzer, UV-C relay and door switch.
+"""Real Raspberry Pi 5 backend: camera, model, candling light, defect LEDs, buzzer, UV-C relay and (once fitted) the
+door switch.
 
 No motors for now: the operator places each egg in front of the fixed camera. For each tray slot the app waits
 until the picture isn't burnt white, takes the sharpest frame of half a second (camera.capture), and runs the
@@ -44,7 +45,8 @@ class PiBackend:
         self.backlight = relay("backlight")
         self.uvc_relay = relay("uvc_relay")
         self.buzzer = Buzzer(PINS["buzzer"])
-        self.door = Button(PINS["door_switch"], pull_up=True)     # pressed = door closed (check your switch)
+        door = PINS["door_switch"]                                 # None until a door switch is fitted
+        self.door = Button(door, pull_up=True) if door is not None else None   # pressed = door closed
         self.defect_leds = [LED(p) for p in PINS["defect_leds"]]
         self.model = None
         self.pool = ThreadPoolExecutor(1, thread_name_prefix="model")
@@ -66,7 +68,8 @@ class PiBackend:
 
     def _close_pins(self) -> None:
         for device in (self.backlight, self.uvc_relay, self.buzzer, self.door, *self.defect_leds):
-            device.close()
+            if device is not None:
+                device.close()
 
     def _close_model(self) -> None:
         self.pool.shutdown(wait=False, cancel_futures=True)
@@ -77,8 +80,12 @@ class PiBackend:
     def eggs_loaded(self) -> bool:
         return True   # TODO: replace with your tray-presence sensor or a camera check
 
+    @property
+    def has_door(self) -> bool:
+        return self.door is not None
+
     def enclosure_closed(self) -> bool:
-        return self.door.is_pressed
+        return self.door.is_pressed if self.door is not None else True    # no switch yet: nothing to check
 
     # ---- inspection ------------------------------------------------------
     def inspect_egg(self, index: int, stop: threading.Event, progress: Progress) -> EggResult | None:
@@ -190,7 +197,7 @@ class _SimulatedModel:
 
 
 class NoModelPiBackend(_SimulatedModel, PiBackend):
-    """Everything real (camera, light, LEDs, buzzer, UV-C, door) except the model, whose verdicts are simulated
+    """Everything real (camera, light, LEDs, buzzer, UV-C) except the model, whose verdicts are simulated
     (no network or API credentials needed)."""
 
     def prepare(self) -> None:
@@ -198,7 +205,7 @@ class NoModelPiBackend(_SimulatedModel, PiBackend):
 
 
 class FakeVisionPiBackend(_SimulatedModel, PiBackend):
-    """Hardware bring-up without a camera: real light, LEDs, buzzer, UV-C and door, synthetic egg images and
+    """Hardware bring-up without a camera: real light, LEDs, buzzer and UV-C, synthetic egg images and
     simulated scores."""
 
     def _init_camera(self, camera: str | None) -> None:

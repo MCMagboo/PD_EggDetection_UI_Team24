@@ -26,7 +26,8 @@ GPIO or model.
 | `--images DIR` | With `--backend images`: folder of egg photos, one per tray slot |
 | `--camera 0` | USB webcam index or path, e.g. `/dev/video8`. With `--backend webcam` (default `0`), or with `--backend pi` to use a USB webcam instead of the ribbon camera |
 | `--fps 30` | Camera frame rate, fixed (default `camera_fps` in `config.py`) |
-| `--model local\|api` | Crack model: `local` = `model_best.pth` on this machine, or `model_best_quantized.pth` if that isn't there (default); `api` = the Modal model API |
+| `--model local\|api` | Crack model: `local` = the weights file on this machine (default); `api` = the Modal model API (Mask R-CNN) |
+| `--weights FILE` | Local model file to use, e.g. `condinst_model.pth` or `model_best.pth` (default: `model_path` in `config.py`, see *The crack-detection model*) |
 | `--no-model` | With `--backend pi`: real camera, candling light, LEDs, buzzer and UV-C; crack verdicts simulated (no network needed) |
 | `--fake-vision` | With `--backend pi`: like `--no-model` but with drawn eggs instead of the camera |
 | `--windowed` | Run in a window instead of fullscreen |
@@ -504,9 +505,10 @@ mode, the LCD scales the picture down and everything goes soft.
 - **Cracks found + Auto on:** UV-C starts automatically after inspection.
 - **Cracks found + Auto off:** UV-C shows **Pending**; the operator taps Run UV-C.
 - **No cracks:** UV-C is skipped (**Not needed**).
-- **Default:** the switch's starting position is `auto_uvc` in `config.py`.
+- **Default:** the switch's starting position is `auto_uvc` in `config.py`, but **off while no door switch is
+  fitted** (`"door_switch": None` in `PINS`).
 
-Safety rules in software:
+Safety rules in software (only once a door switch is fitted; until then nothing checks the door):
 - UV-C never starts with the chamber door open (**Blocked**).
 - It stops within about 50 ms of Stop or the door opening (**Interrupted**).
 - It is always switched off when a run ends, including after errors.
@@ -527,7 +529,8 @@ Safety rules in software:
 | `image_backend.py` | `--backend images` (photo folder) and `--backend webcam` (USB webcam, Live test): the real model, no hardware |
 | `camera.py` | Webcam and Pi camera at a fixed frame rate (reader thread), light control, and `capture()`: the sharpest usable frame of half a second |
 | `pi_backend.py` | Real camera, GPIO, UV-C relay; one picture per egg goes to the model. Also `NoModelPiBackend` (real camera + hardware, simulated verdicts) and `FakeVisionPiBackend` (no camera) |
-| `local_model.py` | Runs `model_best_quantized.pth` (Mask R-CNN + XGrad-CAM) on this machine; the default |
+| `condinst_model.py` | Runs `condinst_model.pth` (CondInst + XGrad-CAM) on this machine in plain PyTorch; the default |
+| `local_model.py` | Runs the Mask R-CNN files (`model_best.pth`, `model_best_quantized.pth`) on this machine |
 | `explain.py` | Measures the heatmap and has the local SLM (Ollama) explain it; fixed-wording fallback |
 | `test_explain.py` | Checks for `explain.py`: `python -m egg_inspector.test_explain` |
 | `selfcheck.py` | Offline readiness check (crack model, PyTorch, Ollama + SLM, with timings): `python -m egg_inspector.selfcheck` |
@@ -568,14 +571,17 @@ the map.
 | Defect LEDs 1–10 | pin → 330 Ω → LED long leg; short legs → GND rail → Pi GND (pin **14**) | **3, 5, 7, 8, 10, 11, 12, 15, 16, 18** |
 | Buzzer (optional) | + to the pin, − to GND | **35** |
 | UV-C relay (optional) | relay module **IN** | **31** |
-| Door switch (optional) | between the pin and GND, closed when the door is shut | **37** |
+| Door switch (not fitted yet) | between the pin and GND, closed when the door is shut; then set `"door_switch": 26` in `PINS` | **37** |
 
 - **Relay polarity:** the Keyes SR1y switches on when S is HIGH, which matches `ACTIVE_HIGH` in `config.py`.
   For a module that switches on when its input is LOW, set that part to `False`. Check with `hwtest`
   (**Backlight on/off**) before connecting the UV-C lamp.
 - **LEDs 4 and 5** use the serial pins: `sudo raspi-config` → *Interface Options* → *Serial Port* → **No** to the
   login shell.
-- **Without a door switch** the app reads the door as open, so UV-C never starts. Everything else works.
+- **No door switch yet** (`"door_switch": None` in `PINS`, the default): nothing checks that the chamber is closed
+  before UV-C. So **auto UV-C starts switched off**, and UV-C only runs when someone taps **Run UV-C** twice (or
+  turns the Auto switch on). Close the chamber and keep everyone clear before tapping it. Once a door switch is
+  fitted, set its pin and the interlock and auto UV-C work as described in *UV-C behaviour*.
 - **Never** put 5 V or 12 V on a GPIO pin; they take 3.3 V only.
 
 ## Testing with a USB webcam (Live test)
@@ -651,7 +657,59 @@ On a PC (PowerShell): `pip install opencv-python-headless`, then
 
 ## The crack-detection model
 
-The model is **Mask R-CNN (ResNet-50 FPN) + XGrad-CAM**, trained by the model team. It can run two ways, chosen by
+Two trained models work in the app. It tells them apart by what's inside the file, so `model_path` in `config.py`
+or `--weights FILE` is all it takes to switch:
+
+| File | Model | Size | In GitHub? | Default threshold |
+|---|---|---|---|---|
+| `condinst_model.pth` | **CondInst** (ResNet-50 FPN), epoch 12, validation AP 0.106 | 136 MB | No: copy it in by hand | 0.45 (placeholder) |
+| `model_best.pth` | **Mask R-CNN** (ResNet-50 FPN), epoch 14, validation AP 0.054 | 176 MB | No: copy it in by hand | 0.83 (validated) |
+| `model_best_quantized.pth` | The same Mask R-CNN, 16-bit numbers | 88 MB | Yes | 0.83 |
+
+**The app uses the first of these files it finds**, in that order (`model_path`, then `model_fallbacks`). The
+self-check prints which one (`crack model file  condinst_model.pth, CondInst (130 MB)`).
+
+### CondInst (`condinst_model.py`)
+
+AdelaiDet's CondInst, run in plain PyTorch: detectron2 and AdelaiDet aren't needed (they don't install on a Pi).
+The layers carry the checkpoint's names and load strictly. Its score is FCOS's `sqrt(crack × centre-ness)` of the
+best detection, so **its scores run lower than the Mask R-CNN's** (about 0.25–0.65), hence its own threshold.
+XGrad-CAM uses the last ResNet block (`res5`), as for the Mask R-CNN.
+
+On the client dataset (19 cracked, 5 intact photos, laptop):
+
+| | Separates cracked from intact (AUC) | Cracked caught | Intact wrongly flagged | Time per photo |
+|---|---|---|---|---|
+| CondInst at 0.45 | 0.87 | 13 of 19 | 1 of 5 (IMG_2475) | ~1.5–2 s |
+| Mask R-CNN at 0.83 | 0.91 | 12 of 19 | 1 of 5 (IMG_2475) | ~1.3–2 s |
+
+- **CondInst's heatmap follows the crack line itself**, where the Mask R-CNN's is a blob. It also found a faint
+  hairline crack (IMG_2489, 0.46) that the Mask R-CNN missed (0.36).
+- **Its threshold, 0.45, is a placeholder** picked from these 24 photos. Ask the model team for the validated one
+  and set `detect_threshold` in `config.py`. Photos near it (e.g. IMG_2482 at 0.446) can go either way.
+- Two training settings aren't stored in the file. The app uses detectron2's defaults, and they were checked on the
+  dataset: BGR input with the ImageNet mean subtracted (RGB scored far worse), and the stride in the first 1×1
+  convolution (the other option scored about the same).
+- CondInst also draws the crack's outline (mask). The app doesn't show it, so that part isn't run.
+
+**Copy it to the Pi** (PC PowerShell, from the folder that contains `egg_inspector\`):
+
+```powershell
+scp egg_inspector\condinst_model.pth team24@team24.local:~/egg_inspector/
+```
+
+**Compare the two on one photo** (PC PowerShell):
+
+```powershell
+python -m egg_inspector.model_client "Duck egg dataset\Cracked\IMG_2489.jpg"
+python -m egg_inspector.model_client "Duck egg dataset\Cracked\IMG_2489.jpg" --weights model_best.pth
+```
+
+Or run the app with one: `python -m egg_inspector --backend webcam --camera 0 --windowed --weights model_best.pth`.
+
+### Mask R-CNN
+
+The Mask R-CNN (ResNet-50 FPN) + XGrad-CAM is the model team's first model. It can run two ways, chosen by
 `model_source` in `config.py` or `--model local|api`. Both give the same answers:
 
 | | `local` (default) | `api` |
@@ -673,8 +731,8 @@ The weights come with the repository: `model_best_quantized.pth` (88 MB). It is 
 as a 16-bit float instead of 32-bit, so half the size. On the dataset photos it gives the same verdicts as the
 full file, with scores within 0.001. Only PyTorch needs installing.
 
-**The app uses the full `model_best.pth` (176 MB) whenever it is in the `egg_inspector` folder**, and
-`model_best_quantized.pth` otherwise (`model_path` / `model_fallback` in `config.py`). The full file is too big for
+**Without `condinst_model.pth`, the app uses the full `model_best.pth` (176 MB)** when it is in the
+`egg_inspector` folder, and `model_best_quantized.pth` otherwise. The full file is too big for
 GitHub (the limit is 100 MB per file), so `.gitignore` keeps it out and it must be **copied in by hand** (PC
 PowerShell, from the folder that contains `egg_inspector\`):
 

@@ -14,6 +14,7 @@ Quick check from a terminal (PC or Pi):  python -m egg_inspector.model_client ph
 from __future__ import annotations
 
 import base64
+import dataclasses
 import io
 import logging
 import os
@@ -141,21 +142,40 @@ def load_model(cfg):
         return CrackModel.from_env(cfg.model_api_url, cfg.detect_threshold)
     if cfg.model_source != "local":
         raise ValueError(f"model_source must be 'local' or 'api', not {cfg.model_source!r}")
+    from .condinst_model import CondInstCrackModel
     from .local_model import LocalCrackModel
 
     path = model_file(cfg)
-    log.info("Crack model: %s", path.name)
-    return LocalCrackModel(path, cfg.detect_threshold)
+    kind = model_kind(path)
+    log.info("Crack model: %s (%s)", path.name, kind)
+    model = CondInstCrackModel if kind == "CondInst" else LocalCrackModel
+    return model(path, cfg.detect_threshold)
 
 
 def model_file(cfg):
-    """cfg.model_path if that file is there, else cfg.model_fallback if that is (relative paths are inside the
-    egg_inspector folder). If neither exists, model_path, so the error names the file that was asked for."""
+    """cfg.model_path if that file is there, else the first of cfg.model_fallbacks that is (relative paths are inside
+    the egg_inspector folder). If none exists, model_path, so the error names the file that was asked for."""
     from pathlib import Path
 
     here = Path(__file__).resolve().parent
-    paths = [p if p.is_absolute() else here / p for p in (Path(cfg.model_path), Path(cfg.model_fallback))]
+    paths = [p if p.is_absolute() else here / p for p in map(Path, (cfg.model_path, *cfg.model_fallbacks))]
     return next((p for p in paths if p.is_file()), paths[0])
+
+
+def model_kind(path) -> str:
+    """"CondInst" or "Mask R-CNN", from the layer names in the weights file (a missing file counts as Mask R-CNN,
+    whose loader then reports it)."""
+    import torch
+
+    from .condinst_model import is_condinst
+
+    if not os.path.isfile(path):
+        return "Mask R-CNN"
+    try:
+        ckpt = torch.load(path, map_location="cpu", weights_only=True, mmap=True)   # reads only the index
+    except RuntimeError:
+        ckpt = torch.load(path, map_location="cpu", weights_only=True)             # older file format
+    return "CondInst" if is_condinst(ckpt.get("model", ckpt)) else "Mask R-CNN"
 
 
 def main() -> None:
@@ -168,16 +188,20 @@ def main() -> None:
     ap.add_argument("--model", choices=["local", "api"], default=Config.model_source,
                     help="local = model_best.pth (or model_best_quantized.pth) on this machine (default); api = the Modal model API")
     ap.add_argument("--heatmap", help="save the XGrad-CAM overlay here (only produced for cracks)")
+    ap.add_argument("--weights", help="local model file to use, e.g. model_best.pth (default: model_path in config.py)")
     args = ap.parse_args()
     if not os.path.isfile(args.image):
         ap.error(f"photo not found: {args.image}")
     cfg = Config(model_source=args.model)
+    if args.weights:
+        cfg = dataclasses.replace(cfg, model_path=args.weights, model_fallbacks=())
     model = load_model(cfg)
     try:
         t0 = time.perf_counter()
         view = model.predict(open_photo(args.image))
-        print(f"{'CRACK' if view.cracked else 'no crack'}  score {view.score:.3f}  "
-              f"({time.perf_counter() - t0:.1f} s, {args.model} model)")
+        name = model_file(cfg).name if args.model == "local" else "model API"
+        print(f"{'CRACK' if view.cracked else 'no crack'}  score {view.score:.3f}  threshold "
+              f"{getattr(model, 'threshold', None) or '-'}  ({time.perf_counter() - t0:.1f} s, {name})")
         if view.heatmap is not None and args.heatmap:
             view.heatmap.save(args.heatmap)
             print(f"Saved heatmap to {args.heatmap}")

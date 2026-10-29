@@ -42,7 +42,8 @@ BUTTONS = {                               # kind -> (fill, text colour)
     "warn": (C["amber"], "#FFFFFF"), "secondary": (C["card"], C["text"]),
 }
 TRAY_COLORS = {"ok": C["green"], "bad": C["red"]}
-VERDICTS = {"idle": ("Waiting", C["faint"]), "ok": ("Accepted", C["green"]), "bad": ("Rejected", C["red"])}
+VERDICTS = {"idle": ("Waiting", C["faint"]), "ok": ("No crack detected", C["green"]),
+            "bad": ("Crack detected", C["red"])}
 LIVE_FEED_MS = 50                         # live picture refresh on screen (20 fps; the camera itself runs at camera_fps)
 LIVE_WINDOW_S = 0.5                       # Live checks the sharpest frame of the last half second (a turning egg blurs)
 UVC_CONFIRM_MS = 3000                     # second tap must land within this window
@@ -394,7 +395,10 @@ class App(ctk.CTk):
         self.events: queue.Queue = queue.Queue()
         self.ctrl = InspectionController(backend, cfg, self.events)
         self.results: dict[int, EggResult] = {}
-        self.auto_uvc = ctk.BooleanVar(value=cfg.auto_uvc)
+        # Without a door switch nothing checks the chamber is shut, so UV-C only starts when the operator taps it
+        # (the Auto switch can still be turned on).
+        self.ctrl.auto_uvc = cfg.auto_uvc and getattr(backend, "has_door", True)
+        self.auto_uvc = ctk.BooleanVar(value=self.ctrl.auto_uvc)
         self._fonts: dict[tuple[int, bool], ctk.CTkFont] = {}
         self._confirm_job: str | None = None
         self._uvc_elapsed = 0
@@ -405,7 +409,8 @@ class App(ctk.CTk):
         self.explainer = Explainer(cfg.explain_model, cfg.explain_url)
         self._slm_busy = False
         self._too_bright = False
-        self._threshold = cfg.detect_threshold or VALIDATED_THRESHOLD
+        self._threshold = (getattr(getattr(backend, "model", None), "threshold", None) or cfg.detect_threshold
+                           or VALIDATED_THRESHOLD)          # the loaded model's own cut-off (CondInst differs)
         threading.Thread(target=self.explainer.warm, daemon=True).start()
         self._live_run = 0                             # bumps each time Live turns on
         self.title("Duck Egg Inspector")

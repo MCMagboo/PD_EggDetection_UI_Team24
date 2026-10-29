@@ -15,7 +15,9 @@ def main() -> None:
                          "images = photos from --images through the real model API (no hardware); "
                          "webcam = USB webcam --camera through the real model, with a Live button (no hardware)")
     ap.add_argument("--model", choices=["local", "api"], default=None,
-                    help="crack model: local = model_best.pth (or model_best_quantized.pth) on this machine (default), api = the Modal model API")
+                    help="crack model: local = the weights file on this machine (default; see --weights), api = the Modal model API")
+    ap.add_argument("--weights", help="local crack model file, e.g. model_best.pth or condinst_model.pth "
+                                      "(default: model_path in config.py)")
     ap.add_argument("--camera", help="USB webcam: index (0 = first) or path, e.g. /dev/video8. With --backend webcam "
                          "(default 0), or with --backend pi to use it instead of the ribbon camera")
     ap.add_argument("--fps", type=int, help=f"camera frame rate (default {Config.camera_fps})")
@@ -40,6 +42,8 @@ def main() -> None:
     cfg = Config(screen_w=w, screen_h=h, fullscreen=not args.windowed)
     if args.model:
         cfg = dataclasses.replace(cfg, model_source=args.model)
+    if args.weights:
+        cfg = dataclasses.replace(cfg, model_path=args.weights, model_fallbacks=())
     if args.fps:
         cfg = dataclasses.replace(cfg, camera_fps=args.fps)
     if args.fast:

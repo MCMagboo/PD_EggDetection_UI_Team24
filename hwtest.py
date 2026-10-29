@@ -41,7 +41,7 @@ def print_pins() -> None:
         polarity = ""
         if name in ACTIVE_HIGH:
             polarity = "  (on = pin HIGH)" if ACTIVE_HIGH[name] else "  (on = pin LOW, active-low board)"
-        print(f"  {name:<15} {pin}{polarity}")
+        print(f"  {name:<15} {'not fitted' if pin is None else pin}{polarity}")
 
 
 class HwTest:
@@ -56,6 +56,9 @@ class HwTest:
 
     # ---- inputs ----------------------------------------------------------
     def sensors(self) -> None:
+        if not self.hw.has_door:
+            print("  No door switch set (PINS door_switch is None in config.py).")
+            return
         print("Door switch for 15 s. Open and close the door to see it change.")
         end, last = time.monotonic() + 15, None
         while time.monotonic() < end:
@@ -122,6 +125,8 @@ class HwTest:
     # ---- UV-C ------------------------------------------------------------
     def uvc(self) -> None:
         print("  WARNING: UV-C damages eyes and skin. Do not look at the lamp; keep the chamber closed.")
+        if not self.hw.has_door:
+            print("  No door switch: nothing checks the chamber is closed. Close it yourself and keep everyone clear.")
         if not self.hw.enclosure_closed():
             print("  Door is OPEN (or the door switch is miswired). UV-C not started.")
             return
@@ -140,7 +145,8 @@ class HwTest:
             print("  UV-C test complete.")
         finally:
             self.hw.uvc(False)
-        print("  Now open the door and run this again: it must refuse to start.")
+        if self.hw.has_door:
+            print("  Now open the door and run this again: it must refuse to start.")
 
     # ---- menu ------------------------------------------------------------
     def loop(self) -> None:

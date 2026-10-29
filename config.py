@@ -9,11 +9,13 @@ class Config:
     egg_count: int = 10               # eggs per tray (Table 1-1)
     uvc_seconds: int = 30             # UV-C exposure per run (Figure 2-11)
     auto_uvc: bool = True             # start UV-C automatically when cracked eggs are found (operator can toggle)
-    detect_threshold: float | None = None   # crack score cut-off; None = the model's validated threshold (0.83)
+    detect_threshold: float | None = None   # crack score cut-off; None = the model's own (Mask R-CNN 0.83, CondInst 0.45)
     model_source: str = "local"       # "local" = the weights file below, on this machine; "api" = the Modal model API
-    model_path: str = "model_best.pth"            # the full model (176 MB, too big for GitHub: copy it in by hand);
-    model_fallback: str = "model_best_quantized.pth"   # used when model_path is missing (88 MB half-precision copy,
-                                                  # in git); relative paths are inside the egg_inspector folder
+    model_path: str = "condinst_model.pth"        # crack model file: CondInst (136 MB) or a Mask R-CNN file, told
+                                                  # apart by its contents; too big for GitHub, so copy it in by hand
+    model_fallbacks: tuple[str, ...] = ("model_best.pth", "model_best_quantized.pth")   # tried in order when
+                                                  # model_path is missing (the last one is in git); relative paths
+                                                  # are inside the egg_inspector folder
     explain_model: str = "qwen2.5:1.5b"   # small language model (Ollama) that words the heatmap explanation
     explain_url: str = "http://127.0.0.1:11434"   # Ollama on this machine
     model_api_url: str = "https://qeresanjuan-capstone-maskrcnn--capstone-maskrcnn-api-cra-86a8eb.us-east.modal.run"
@@ -31,7 +33,8 @@ PINS = {
     "backlight": 5,            # LED transillumination array (via driver/relay)
     "uvc_relay": 6,            # UV-C module (optocoupler relay)
     "buzzer": 19,              # 70-85 dB alert
-    "door_switch": 26,         # enclosure interlock; pressed = door closed
+    "door_switch": None,       # enclosure interlock (pressed = door closed). None = no door switch yet: UV-C then
+                               # has no door check and auto UV-C starts off. Set the pin (e.g. 26) once it's fitted.
     "defect_leds": [2, 3, 4, 14, 15, 17, 18, 22, 23, 24],  # one per tray slot
 }
 

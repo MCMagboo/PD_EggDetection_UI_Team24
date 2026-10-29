@@ -162,9 +162,9 @@ else
     rm -f "$AUTOSTART_FILE"
 fi
 
-if [ "$BACKEND" != mock ] && [ ! -f "$PKG_DIR/model_best.pth" ]; then
-    if [ -f "$PKG_DIR/model_best_quantized.pth" ]; then
-        say "Using model_best_quantized.pth. For the full model, copy model_best.pth into $PKG_DIR (see README)"
+if [ "$BACKEND" != mock ] && [ ! -f "$PKG_DIR/condinst_model.pth" ]; then
+    if [ -f "$PKG_DIR/model_best.pth" ] || [ -f "$PKG_DIR/model_best_quantized.pth" ]; then
+        say "Using the Mask R-CNN model. For the CondInst model, copy condinst_model.pth into $PKG_DIR (see README)"
     else
         say "Model weights missing: $PKG_DIR/model_best_quantized.pth (it comes with git pull; see README)"
     fi

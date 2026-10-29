@@ -11,7 +11,7 @@ import sys
 import time
 
 from .config import Config
-from .model_client import model_file
+from .model_client import model_file, model_kind
 
 SAMPLE = {"score": 0.959, "threshold": 0.83, "box_place": "centre", "box_area": 0.455, "hot_place": "centre",
           "hot_area": 0.035, "hot_spots": 3, "on_crack": 0.895}         # measurements of a real cracked egg
@@ -28,7 +28,7 @@ def main() -> None:
         print(f"{rows[-1][0]}  {name}  {note}", flush=True)
 
     weights = model_file(cfg)
-    row(weights.is_file(), "crack model file", f"{weights.name} ({weights.stat().st_size / 2**20:.0f} MB)"
+    row(weights.is_file(), "crack model file", f"{weights.name}, {model_kind(weights)} ({weights.stat().st_size / 2**20:.0f} MB)"
         if weights.is_file() else f"missing: {weights}")
     try:
         import torch
